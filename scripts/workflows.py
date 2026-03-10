@@ -74,6 +74,8 @@ def run_maps_reviews_all(query, num=5, page=1, gl='cn', hl='zh-cn'):
     if not places:
         return {
             'ok': False,
+            'allSucceeded': False,
+            'failedCount': 0,
             'query': query,
             'maps': maps_data,
             'results': [],
@@ -83,6 +85,7 @@ def run_maps_reviews_all(query, num=5, page=1, gl='cn', hl='zh-cn'):
 
     results = []
     used_review_keys = []
+    failed_count = 0
     for idx, chosen in enumerate(places, start=1):
         try:
             reviews_data, reviews_key = do_request(
@@ -104,16 +107,20 @@ def run_maps_reviews_all(query, num=5, page=1, gl='cn', hl='zh-cn'):
                 'reviews': reviews_data,
             })
         except Exception as e:
+            failed_count += 1
             results.append({
                 'ok': False,
                 'pick': idx,
                 'selectedPlace': _select_place_payload(chosen),
-                'error': str(e),
+                'error': f'{type(e).__name__}: {e}',
                 'reviews': None,
             })
 
+    all_succeeded = failed_count == 0
     return {
         'ok': True,
+        'allSucceeded': all_succeeded,
+        'failedCount': failed_count,
         'query': query,
         'maps': maps_data,
         'results': results,
@@ -179,6 +186,11 @@ def render_maps_reviews_all_pretty(result, gl, hl, limit=5):
     if not result.get('ok'):
         safe_print(f"❌ {result.get('error', 'maps-reviews --all failed')}")
         return
+
+    failed_count = result.get('failedCount', 0)
+    all_succeeded = result.get('allSucceeded', failed_count == 0)
+    status_text = '全部成功' if all_succeeded else f'部分失败（失败 {failed_count} 个）'
+    safe_print(f'📊 执行状态: {status_text}')
 
     for entry in result.get('results', []):
         pick = entry.get('pick')

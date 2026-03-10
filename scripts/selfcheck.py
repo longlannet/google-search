@@ -2,6 +2,8 @@
 import json
 import sys
 
+from args import parse_args as parse_search_args
+from args import UsageError
 from utils import SerperAPIError, do_request, load_api_keys, run_maps_reviews, run_maps_reviews_all, safe_print, summarize_response_shape
 
 
@@ -19,6 +21,14 @@ def emit(summary, compact=False):
         safe_print(json.dumps(summary, ensure_ascii=False, separators=(',', ':')))
     else:
         safe_print(json.dumps(summary, ensure_ascii=False, indent=2))
+
+
+def record_result(summary, endpoint, payload, ok=None):
+    summary['results'][endpoint] = payload
+    if ok is False:
+        summary['ok'] = False
+        error_text = payload.get('error', 'failed')
+        summary['errors'].append(f'{endpoint}: {error_text}')
 
 
 def main():
@@ -70,20 +80,20 @@ def main():
         try:
             if endpoint == 'maps-reviews-all':
                 result = run_maps_reviews_all(query, num=3, page=1, gl='us', hl='en')
-                summary['results'][endpoint] = {
+                payload = {
                     'ok': result.get('ok', False),
                     'query': query,
                     'resultCount': len(result.get('results', [])),
+                    'failedCount': result.get('failedCount', 0),
+                    'allSucceeded': result.get('allSucceeded', False),
                     'mapsShape': summarize_response_shape(result.get('maps', {})),
                 }
-                if not result.get('ok', False):
-                    summary['ok'] = False
-                    summary['errors'].append(f'{endpoint}: {result.get("error", "failed")}')
+                record_result(summary, endpoint, payload, ok=result.get('ok', False))
                 continue
 
             if endpoint.startswith('maps-reviews'):
                 result = run_maps_reviews(query, num=3, page=1, gl='us', hl='en', pick=spec.get('pick', 1))
-                summary['results'][endpoint] = {
+                payload = {
                     'ok': result.get('ok', False),
                     'query': query,
                     'pick': spec.get('pick', 1),
@@ -91,9 +101,7 @@ def main():
                     'mapsShape': summarize_response_shape(result.get('maps', {})),
                     'reviewsShape': summarize_response_shape(result.get('reviews', {})),
                 }
-                if not result.get('ok', False):
-                    summary['ok'] = False
-                    summary['errors'].append(f'{endpoint}: {result.get("error", "failed")}')
+                record_result(summary, endpoint, payload, ok=result.get('ok', False))
                 continue
 
             data, used_key = do_request(
@@ -107,28 +115,71 @@ def main():
                 cid=spec.get('cid'),
                 fid=spec.get('fid'),
             )
-            summary['results'][endpoint] = {
+            payload = {
                 'ok': True,
                 'query': query,
                 'usedKeySuffix': used_key[-4:],
                 'shape': summarize_response_shape(data),
             }
+
+            if endpoint == 'maps':
+                payload['hasPlaces'] = bool(data.get('places'))
+                if not payload['hasPlaces']:
+                    payload['ok'] = False
+                    payload['error'] = 'maps response does not include places'
+            elif endpoint == 'webpage':
+                payload['hasText'] = bool((data.get('text') or '').strip())
+                if not payload['hasText']:
+                    payload['ok'] = False
+                    payload['error'] = 'webpage response does not include text'
+            elif endpoint == 'lens':
+                payload['hasStructuredResult'] = any(
+                    key in data for key in ['organic', 'visualMatches', 'similarImages', 'images']
+                )
+                if not payload['hasStructuredResult']:
+                    payload['ok'] = False
+                    payload['error'] = 'lens response does not include structured result fields'
+
+            record_result(summary, endpoint, payload, ok=payload.get('ok', False))
         except (SystemExit, SerperAPIError) as e:
-            summary['ok'] = False
-            summary['results'][endpoint] = {
+            record_result(summary, endpoint, {
                 'ok': False,
                 'query': query,
                 'error': f'API Error / Exit: {e}',
-            }
-            summary['errors'].append(f'{endpoint}: {e}')
+            }, ok=False)
         except Exception as e:
-            summary['ok'] = False
-            summary['results'][endpoint] = {
+            record_result(summary, endpoint, {
                 'ok': False,
                 'query': query,
                 'error': f'{type(e).__name__}: {e}',
-            }
-            summary['errors'].append(f'{endpoint}: {type(e).__name__}: {e}')
+            }, ok=False)
+
+    negative_checks = [
+        ('arg-conflict-json-raw', lambda: parse_search_args(['web', 'OpenAI', '--json', '--raw']), UsageError),
+        ('reviews-missing-id', lambda: parse_search_args(['reviews']), UsageError),
+        ('maps-reviews-all-pick-conflict', lambda: parse_search_args(['maps-reviews', 'coffee shanghai', '--all', '--pick', '2']), UsageError),
+        ('webpage-missing-url', lambda: parse_search_args(['webpage']), UsageError),
+    ]
+
+    for name, fn, expected_exc in negative_checks:
+        summary['endpointsTested'].append(name)
+        try:
+            fn()
+            record_result(summary, name, {
+                'ok': False,
+                'error': f'Expected {expected_exc.__name__} but no exception was raised',
+            }, ok=False)
+        except expected_exc as e:
+            record_result(summary, name, {
+                'ok': True,
+                'expectedError': expected_exc.__name__,
+                'message': str(e),
+            }, ok=True)
+        except Exception as e:
+            record_result(summary, name, {
+                'ok': False,
+                'error': f'Expected {expected_exc.__name__}, got {type(e).__name__}: {e}',
+            }, ok=False)
 
     emit(summary, compact=compact)
     sys.exit(0 if summary['ok'] else 1)

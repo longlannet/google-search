@@ -2,6 +2,8 @@
 
 Use this file when you need copy-paste command examples.
 
+`{baseDir}` means the root directory of this skill.
+
 ## Basic search
 
 ```bash

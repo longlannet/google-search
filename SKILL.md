@@ -1,12 +1,6 @@
 ---
 name: google-search
 description: Real-time Google search using Serper.dev API. Use for general web searches, news, images, videos, shopping, places, maps, reviews, autocomplete, patents, webpage extraction, lens lookup, or finding specific information.
-homepage: https://serper.dev
-metadata:
-  openclaw:
-    emoji: "🔎"
-    requires:
-      bins: ["python3"]
 ---
 
 # Google Search Skill (Serper.dev)

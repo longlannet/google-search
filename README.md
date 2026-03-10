@@ -353,14 +353,6 @@ config/serper.env
 
 ---
 
-## 推荐仓库名
+## 许可
 
-```text
-openclaw-skill-google-search
-```
-
----
-
-## 许可与使用
-
-你可以根据自己的 OpenClaw 工作区和私有技能管理方式，选择合适的许可证或私有仓库策略。
+本项目使用 [MIT License](./LICENSE) 发布。

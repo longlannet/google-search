@@ -62,13 +62,16 @@ def get_next_key_index(total_keys):
                     idx = int(txt)
                 except ValueError:
                     idx = 0
+            current_idx = idx % total_keys
+            next_idx = (current_idx + 1) % total_keys
             f.seek(0)
             f.truncate()
-            f.write(str(idx + 1))
+            f.write(str(next_idx))
             fcntl.flock(f, fcntl.LOCK_UN)
+            return current_idx
     except Exception:
         pass
-    return idx % total_keys
+    return 0
 
 
 def do_request(endpoint, query, num, page=1, gl='cn', hl='zh-cn', place_id=None, cid=None, fid=None):
@@ -116,7 +119,12 @@ def do_request(endpoint, query, num, page=1, gl='cn', hl='zh-cn', place_id=None,
         try:
             response = _session.post(url, headers=headers, data=payload, timeout=20)
             if response.status_code == 200:
-                return response.json(), key
+                try:
+                    return response.json(), key
+                except ValueError as e:
+                    last_error = f'Invalid JSON response: {e}'
+                    errors.append(f'...{key[-4:]} => Invalid JSON response')
+                    continue
             if response.status_code in [401, 403, 429]:
                 errors.append(f'...{key[-4:]} => HTTP {response.status_code}')
                 last_error = f'HTTP {response.status_code}'
