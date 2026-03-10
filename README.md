@@ -1,15 +1,26 @@
 # openclaw-skill-google-search
 
-一个面向 OpenClaw 的生产可用技能仓库，用于通过 [Serper.dev](https://serper.dev) 调用 Google 搜索能力。
+> 基于 Serper.dev 的 OpenClaw Google 搜索技能，支持网页、新闻、图片、地图、评论、网页提取、Lens 反查等能力。
 
-这个 skill 把 Serper 封装成一个可复用的 OpenClaw / AgentSkills 包，提供：
+`openclaw-skill-google-search` 是一个面向 OpenClaw / AgentSkills 的技能仓库，用来把 [Serper.dev](https://serper.dev) 封装成一个结构清晰、可复用、便于维护的 Google 搜索 skill。
 
-- 多种搜索端点
-- 适合人类阅读的 pretty 输出
-- 适合程序处理的 JSON / raw 输出
-- 本地地图到评论的工作流支持
-- 示例命令与自检脚本
-- 拆分好的参考文档，方便 agent 按需读取
+它适合这些场景：
+
+- 给 OpenClaw 增加实时 Google 搜索能力
+- 把 Serper 搜索接口整理成可复用技能
+- 在私有仓库或公开仓库中长期维护一个独立 skill
+- 同时兼顾人工阅读输出与机器可处理输出
+
+## 特性概览
+
+- 支持多种搜索端点
+- 支持 pretty / json / raw / compact 输出
+- 支持 `maps-reviews` 地图到评论工作流
+- 支持 `webpage` 网页正文提取
+- 支持 `lens` 图像反查入口
+- 提供 `selfcheck.py` 自检脚本
+- 提供适合 agent 按需读取的参考文档
+- 提供中文 README、安装说明和 changelog
 
 ## 支持的能力
 
@@ -52,6 +63,7 @@
 google-search/
 ├── SKILL.md
 ├── README.md
+├── CHANGELOG.md
 ├── requirements.txt
 ├── .gitignore
 ├── config/
@@ -112,6 +124,22 @@ pip install -r requirements.txt
 - `config/serper.env.example`
 - `.gitignore`
 - `requirements.txt`
+
+---
+
+## 快速开始
+
+1. 安装依赖
+2. 复制配置文件
+3. 写入你的 Serper API key
+4. 运行一条测试命令
+
+示例：
+
+```bash
+cp config/serper.env.example config/serper.env
+python3 scripts/search.py web "OpenAI"
+```
 
 ---
 
@@ -309,6 +337,14 @@ config/serper.env
 - Python 缓存文件
 
 这样可以在上传到 GitHub 时避免把真实 API key 和运行产物一起提交。
+
+---
+
+## 版本发布
+
+- 版本变更记录见 [CHANGELOG.md](./CHANGELOG.md)
+- 当前首个公开版本为 `v0.1.0`
+- GitHub Releases 可用于查看阶段性发布说明
 
 ---
 
