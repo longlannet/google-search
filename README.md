@@ -387,8 +387,38 @@ config/serper.env
 ## 版本发布
 
 - 版本变更记录见 [CHANGELOG.md](./CHANGELOG.md)
-- 当前最新发布版本为 `v0.1.1`
+- 当前最新发布版本为 `v0.1.2`
 - GitHub Releases 可用于查看阶段性发布说明
+
+---
+
+## 结构冻结说明
+
+当前仓库的脚本结构已基本定型，后续维护建议优先：
+
+- 增加功能
+- 补充文档
+- 增量补测试
+
+除非出现明显维护成本问题，否则**不再继续进行大规模结构重构**。
+
+当前推荐结构如下：
+
+```text
+scripts/
+├── args.py
+├── client.py
+├── helptext.py
+├── io_common.py
+├── renderers.py
+├── renderers_json.py
+├── renderers_pretty.py
+├── response_shapes.py
+├── search.py
+├── selfcheck.py
+├── utils.py
+└── workflows.py
+```
 
 ---
 
