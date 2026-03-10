@@ -387,7 +387,7 @@ config/serper.env
 ## 版本发布
 
 - 版本变更记录见 [CHANGELOG.md](./CHANGELOG.md)
-- 当前最新发布版本为 `v0.1.2`
+- 当前最新发布版本为 `v0.1.3`
 - GitHub Releases 可用于查看阶段性发布说明
 
 ---
