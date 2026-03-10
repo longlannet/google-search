@@ -89,7 +89,7 @@ def main():
         elif output_mode == 'raw':
             safe_print(serialize_json({'error': str(e)}, compact=compact))
         else:
-            safe_print(f"❌ 解析请求错误: {e}")
+            safe_print(f"❌ 请求失败: {e}")
         sys.exit(1)
 
     if output_mode == 'raw':

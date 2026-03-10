@@ -18,11 +18,9 @@
 
 ## 特性概览
 
-- 支持多种搜索端点
+- 支持网页、新闻、图片、视频、购物、学术、专利、地点、地图、评论、网页提取、Lens 反查等能力
 - 支持 pretty / json / raw / compact 输出
 - 支持 `maps-reviews` 地图到评论工作流
-- 支持 `webpage` 网页正文提取
-- 支持 `lens` 图像反查入口
 - 提供 `selfcheck.py` 自检脚本
 - 提供适合 agent 按需读取的参考文档
 - 提供中文 README、安装说明和 changelog
@@ -314,21 +312,62 @@ python3 scripts/selfcheck.py --full
 
 ---
 
-## OpenClaw 使用说明
+## OpenClaw 集成步骤
+
+如果你要把它作为 OpenClaw 本地 skill 使用，推荐按下面步骤操作：
+
+1. 把仓库放到 OpenClaw 的 skills 目录，例如：
+
+```bash
+cd ~/.openclaw/workspace/skills
+git clone https://github.com/longlannet/openclaw-skill-google-search.git google-search
+```
+
+2. 安装依赖：
+
+```bash
+cd google-search
+pip install -r requirements.txt
+```
+
+3. 复制配置文件并写入真实 API key：
+
+```bash
+cp config/serper.env.example config/serper.env
+```
+
+4. 确认目录中存在这些关键文件：
+
+- `SKILL.md`
+- `scripts/search.py`
+- `references/endpoints.md`
+- `config/serper.env`
+
+5. 让 OpenClaw 重新加载 skills（具体方式取决于你的运行方式；如果当前实例不会自动发现新 skill，可重启一次 OpenClaw）。
 
 这个仓库按 OpenClaw skill 的方式组织：
 
-- `SKILL.md` 保持精简，用于触发与导航
+- `SKILL.md` 用于触发与导航
 - `references/` 保存详细端点说明与示例
 - `scripts/` 保存稳定的执行逻辑
 
-如果你是在 OpenClaw 的 skills 目录中使用它，请把真实 API key 放到：
+真实 API key 请放到：
 
 ```text
 config/serper.env
 ```
 
 **不要提交这个文件。**
+
+---
+
+## 限制与注意事项
+
+- 默认区域参数目前偏中文环境：`gl=cn`、`hl=zh-cn`
+- `reviews` 不能只传普通文本查询，必须提供 `--place-id`、`--cid` 或 `--fid` 之一
+- `maps-reviews --all` 会对多个地点逐个抓评论，耗时和 credits 消耗都会更高
+- `lens` 返回空结果不一定代表请求失败，有时只是没有匹配项
+- `selfcheck.py` 更接近联网健康检查（smoke test），不是完全离线、可重复的单元测试
 
 ---
 
@@ -348,7 +387,7 @@ config/serper.env
 ## 版本发布
 
 - 版本变更记录见 [CHANGELOG.md](./CHANGELOG.md)
-- 当前首个公开版本为 `v0.1.0`
+- 当前最新发布版本为 `v0.1.1`
 - GitHub Releases 可用于查看阶段性发布说明
 
 ---

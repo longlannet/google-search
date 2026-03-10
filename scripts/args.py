@@ -33,6 +33,10 @@ ENDPOINTS = {
     'examples': 'examples',
 }
 
+LEGACY_SEARCH_ALIASES = {'search', 'web'}
+DEFAULT_GL = 'us'
+DEFAULT_HL = 'en'
+
 
 class UsageError(Exception):
     pass
@@ -77,6 +81,20 @@ def _coerce_int(value, default):
         return default
 
 
+def _require_positive(name, value):
+    if value is not None and value <= 0:
+        raise UsageError(f'{name} must be a positive integer')
+
+
+def _looks_like_legacy_search(ns):
+    if ns.mode is None:
+        return False
+    if ns.mode.lower() in LEGACY_SEARCH_ALIASES:
+        return False
+    legacy_tail = [ns.query, ns.num_pos, ns.page_pos, ns.gl_pos, ns.hl_pos]
+    return any(item is not None for item in legacy_tail)
+
+
 def parse_args(argv):
     if not argv:
         raise UsageError(get_usage())
@@ -94,18 +112,25 @@ def parse_args(argv):
     endpoint = ENDPOINTS.get(mode_lower)
 
     if endpoint is None:
+        if not _looks_like_legacy_search(ns):
+            raise UsageError(f'Unknown mode / endpoint: {ns.mode}')
         endpoint = 'search'
         query = ns.mode
         num = ns.num if ns.num is not None else _coerce_int(ns.query, 5)
         page = ns.page if ns.page is not None else _coerce_int(ns.num_pos, 1)
-        gl = ns.gl if ns.gl is not None else (ns.page_pos or 'cn')
-        hl = ns.hl if ns.hl is not None else (ns.gl_pos or 'zh-cn')
+        gl = ns.gl if ns.gl is not None else (ns.page_pos or DEFAULT_GL)
+        hl = ns.hl if ns.hl is not None else (ns.gl_pos or DEFAULT_HL)
     else:
         query = ns.query
         num = ns.num if ns.num is not None else _coerce_int(ns.num_pos, 5)
         page = ns.page if ns.page is not None else _coerce_int(ns.page_pos, 1)
-        gl = ns.gl if ns.gl is not None else (ns.gl_pos or 'cn')
-        hl = ns.hl if ns.hl is not None else (ns.hl_pos or 'zh-cn')
+        gl = ns.gl if ns.gl is not None else (ns.gl_pos or DEFAULT_GL)
+        hl = ns.hl if ns.hl is not None else (ns.hl_pos or DEFAULT_HL)
+
+    _require_positive('num', num)
+    _require_positive('page', page)
+    _require_positive('pick', ns.pick)
+    _require_positive('limit', ns.limit)
 
     if endpoint in {'overview', 'examples'}:
         query = query or endpoint

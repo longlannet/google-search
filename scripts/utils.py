@@ -1,11 +1,10 @@
 #!/usr/bin/env python3
 from args import ENDPOINTS, UsageError, get_usage, parse_args
 from client import SerperAPIError, do_request, load_api_keys
+from helptext import print_examples, print_overview
 from renderers import (
     emit_json_wrapper,
     emit_raw_json,
-    print_examples,
-    print_overview,
     print_places,
     print_reviews,
     render_results,

@@ -8,13 +8,16 @@
 
 ### Changed
 
-- 回滚 `SKILL.md` frontmatter 收紧调整，恢复 `homepage` 与 `metadata.openclaw` 字段
-- 保留 `client.py` 中 API key 轮转索引回绕修复
-- 保留非 JSON 响应的更明确错误处理
-- 保留 `selfcheck.py` 的异常路径验证增强
-- 保留 `maps-reviews --all` 的 `allSucceeded` / `failedCount` 状态字段
+- 恢复 `SKILL.md` 中的 `homepage` 与 `metadata.openclaw` 字段
+- 优化 README、示例说明与许可证文案
+
+### Fixed
+
+- 修复 `client.py` 中 API key 轮转索引持续增长的问题，改为按 key 数量回绕
+- 改进 200 响应但非 JSON 返回时的错误处理
+- 增强 `selfcheck.py` 的参数错误路径验证
+- 为 `maps-reviews --all` 增加 `allSucceeded` 与 `failedCount` 状态字段
 - 在 `references/examples.md` 中补充 `{baseDir}` 含义说明
-- README 删除部分冗余内容，并明确 MIT License 说明
 
 ## [v0.1.0] - 2026-03-10
 

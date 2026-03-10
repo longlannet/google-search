@@ -7,6 +7,12 @@ from args import UsageError
 from utils import SerperAPIError, do_request, load_api_keys, run_maps_reviews, run_maps_reviews_all, safe_print, summarize_response_shape
 
 
+SELF_CHECK_NOTES = [
+    '这是联网健康检查（smoke test），不是完整单元测试。',
+    '结果会受到网络状态、API 配额、Serper 返回结构变化等因素影响。',
+]
+
+
 def parse_args(argv):
     full = '--full' in argv
     compact = '--compact' in argv
@@ -40,6 +46,8 @@ def main():
     summary = {
         'ok': True,
         'mode': 'full' if full else 'basic',
+        'kind': 'smoke-test',
+        'notes': SELF_CHECK_NOTES,
         'keyCount': len(keys),
         'endpointsTested': [],
         'results': {},
@@ -48,7 +56,7 @@ def main():
 
     if not keys:
         summary['ok'] = False
-        summary['errors'].append('No valid API keys found in config/serper.env')
+        summary['errors'].append('No valid API keys found in config/serper.env or SERPER_API_KEY')
         emit(summary, compact=compact)
         sys.exit(1)
 
@@ -159,6 +167,10 @@ def main():
         ('reviews-missing-id', lambda: parse_search_args(['reviews']), UsageError),
         ('maps-reviews-all-pick-conflict', lambda: parse_search_args(['maps-reviews', 'coffee shanghai', '--all', '--pick', '2']), UsageError),
         ('webpage-missing-url', lambda: parse_search_args(['webpage']), UsageError),
+        ('num-nonpositive', lambda: parse_search_args(['web', 'OpenAI', '--num', '0']), UsageError),
+        ('page-nonpositive', lambda: parse_search_args(['web', 'OpenAI', '--page', '-1']), UsageError),
+        ('limit-nonpositive', lambda: parse_search_args(['web', 'OpenAI', '--limit', '0']), UsageError),
+        ('unknown-endpoint', lambda: parse_search_args(['newss']), UsageError),
     ]
 
     for name, fn, expected_exc in negative_checks:

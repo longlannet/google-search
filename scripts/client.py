@@ -10,6 +10,8 @@ CONFIG_DIR = SCRIPT_DIR.parent / 'config'
 ENV_FILE = CONFIG_DIR / 'serper.env'
 RUNTIME_DIR = SCRIPT_DIR.parent / 'runtime'
 RR_INDEX_FILE = RUNTIME_DIR / 'serper_rr.idx'
+REQUEST_TIMEOUT_SECONDS = 20
+USER_AGENT = 'openclaw-skill-google-search/0.1'
 
 
 class SerperAPIError(Exception):
@@ -19,24 +21,31 @@ class SerperAPIError(Exception):
 _session = requests.Session()
 
 
+def _normalize_key_line(raw_line):
+    line = raw_line.strip()
+    if not line or line.startswith('#'):
+        return None
+
+    if line.startswith('SERPER_API_KEY='):
+        line = line.split('=', 1)[1].strip().strip('"').strip("'")
+    elif line.lower().startswith('key:'):
+        line = line.split(':', 1)[1].strip()
+
+    if len(line) <= 20 or any(ch.isspace() for ch in line):
+        return None
+    return line
+
+
 def load_api_keys():
     keys = []
     if ENV_FILE.exists():
         for raw_line in ENV_FILE.read_text('utf-8').splitlines():
-            line = raw_line.strip()
-            if not line or line.startswith('#'):
-                continue
+            key = _normalize_key_line(raw_line)
+            if key:
+                keys.append(key)
 
-            if line.startswith('SERPER_API_KEY='):
-                line = line.split('=', 1)[1].strip().strip('"').strip("'")
-            elif line.lower().startswith('key:'):
-                line = line.split(':', 1)[1].strip()
-
-            if len(line) > 20:
-                keys.append(line)
-
-    env_key = os.environ.get('SERPER_API_KEY')
-    if not keys and env_key and len(env_key) > 20:
+    env_key = _normalize_key_line(os.environ.get('SERPER_API_KEY', ''))
+    if env_key:
         keys.append(env_key)
 
     deduped = []
@@ -74,12 +83,7 @@ def get_next_key_index(total_keys):
     return 0
 
 
-def do_request(endpoint, query, num, page=1, gl='cn', hl='zh-cn', place_id=None, cid=None, fid=None):
-    keys = load_api_keys()
-    if not keys:
-        raise SerperAPIError('No valid API keys found in config/serper.env')
-
-    url = f'https://google.serper.dev/{endpoint}'
+def _build_payload(endpoint, query, num, page, gl, hl, place_id=None, cid=None, fid=None):
     payload_obj = {}
 
     if endpoint in {'webpage', 'lens'}:
@@ -103,7 +107,24 @@ def do_request(endpoint, query, num, page=1, gl='cn', hl='zh-cn', place_id=None,
     if fid:
         payload_obj['fid'] = fid
 
-    payload = json.dumps(payload_obj)
+    return payload_obj
+
+
+def _summarize_http_error(response):
+    text = (response.text or '').strip()
+    if text:
+        text = text.replace('\n', ' ')[:200]
+        return f'HTTP {response.status_code}: {text}'
+    return f'HTTP {response.status_code}'
+
+
+def do_request(endpoint, query, num, page=1, gl='cn', hl='zh-cn', place_id=None, cid=None, fid=None):
+    keys = load_api_keys()
+    if not keys:
+        raise SerperAPIError('No valid API keys found in config/serper.env or SERPER_API_KEY')
+
+    url = f'https://google.serper.dev/{endpoint}'
+    payload = json.dumps(_build_payload(endpoint, query, num, page, gl, hl, place_id=place_id, cid=cid, fid=fid))
     total = len(keys)
     start_idx = get_next_key_index(total)
     ordered_keys = keys[start_idx:] + keys[:start_idx]
@@ -114,10 +135,11 @@ def do_request(endpoint, query, num, page=1, gl='cn', hl='zh-cn', place_id=None,
     for key in ordered_keys:
         headers = {
             'X-API-KEY': key,
-            'Content-Type': 'application/json'
+            'Content-Type': 'application/json',
+            'User-Agent': USER_AGENT,
         }
         try:
-            response = _session.post(url, headers=headers, data=payload, timeout=20)
+            response = _session.post(url, headers=headers, data=payload, timeout=REQUEST_TIMEOUT_SECONDS)
             if response.status_code == 200:
                 try:
                     return response.json(), key
@@ -126,14 +148,26 @@ def do_request(endpoint, query, num, page=1, gl='cn', hl='zh-cn', place_id=None,
                     errors.append(f'...{key[-4:]} => Invalid JSON response')
                     continue
             if response.status_code in [401, 403, 429]:
-                errors.append(f'...{key[-4:]} => HTTP {response.status_code}')
-                last_error = f'HTTP {response.status_code}'
+                last_error = _summarize_http_error(response)
+                errors.append(f'...{key[-4:]} => {last_error}')
+                continue
+            if 500 <= response.status_code < 600:
+                last_error = _summarize_http_error(response)
+                errors.append(f'...{key[-4:]} => {last_error}')
                 continue
             response.raise_for_status()
+        except requests.Timeout as e:
+            last_error = f'Timeout: {e}'
+            errors.append(f'...{key[-4:]} => Timeout')
+            continue
+        except requests.RequestException as e:
+            last_error = e
+            errors.append(f'...{key[-4:]} => {type(e).__name__}: {e}')
+            continue
         except Exception as e:
             last_error = e
             errors.append(f'...{key[-4:]} => {type(e).__name__}: {e}')
             continue
 
     error_summary = '; '.join(errors[-10:]) if errors else str(last_error)
-    raise SerperAPIError(f'All API Keys failed. Last error: {last_error} | Summary: {error_summary}')
+    raise SerperAPIError(f'All API keys failed. Last error: {last_error} | Summary: {error_summary}')
