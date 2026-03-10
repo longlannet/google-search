@@ -1,0 +1,12 @@
+# Sensitive config
+config/serper.env
+
+# Runtime state
+runtime/
+
+# Python cache
+scripts/__pycache__/
+*.pyc
+
+# Local virtualenv
+venv/
