@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 from client import do_request
-from renderers import print_places, print_reviews, save_output, safe_print, serialize_json
+from renderers import print_places, print_reviews, safe_print
+from renderers_json import save_output, serialize_json
 
 
 def _select_place_payload(chosen):

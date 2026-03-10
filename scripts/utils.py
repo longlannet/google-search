@@ -3,16 +3,13 @@ from args import ENDPOINTS, UsageError, get_usage, parse_args
 from client import SerperAPIError, do_request, load_api_keys
 from helptext import print_examples, print_overview
 from renderers import (
-    emit_json_wrapper,
-    emit_raw_json,
     print_places,
     print_reviews,
     render_results,
     safe_print,
-    save_output,
-    serialize_json,
     summarize_response_shape,
 )
+from renderers_json import emit_json_wrapper, emit_raw_json, save_output, serialize_json
 from workflows import (
     emit_maps_reviews_all_json,
     emit_maps_reviews_all_raw,
