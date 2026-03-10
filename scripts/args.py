@@ -34,8 +34,8 @@ ENDPOINTS = {
 }
 
 LEGACY_SEARCH_ALIASES = {'search', 'web'}
-DEFAULT_GL = 'us'
-DEFAULT_HL = 'en'
+DEFAULT_GL = 'cn'
+DEFAULT_HL = 'zh-cn'
 
 
 class UsageError(Exception):
