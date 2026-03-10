@@ -11,3 +11,5 @@ scripts/__pycache__/
 
 # Local virtualenv
 venv/
+.venv/
+.venv-test/

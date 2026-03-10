@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-from client import SerperAPIError, do_request
+from client import do_request
 from io_common import safe_print
 from renderers import print_places, print_reviews
 from renderers_json import save_output, serialize_json

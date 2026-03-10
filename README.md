@@ -74,10 +74,18 @@ google-search/
 ├── references/
 │   ├── endpoints.md
 │   └── examples.md
+├── tests/
+│   ├── test_args.py
+│   └── test_workflows.py
 └── scripts/
     ├── args.py
     ├── client.py
+    ├── helptext.py
+    ├── io_common.py
     ├── renderers.py
+    ├── renderers_json.py
+    ├── renderers_pretty.py
+    ├── response_shapes.py
     ├── search.py
     ├── selfcheck.py
     ├── utils.py
