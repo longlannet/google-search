@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 from client import do_request
-from renderers import print_places, print_reviews, safe_print
+from io_common import safe_print
+from renderers import print_places, print_reviews
 from renderers_json import save_output, serialize_json
 
 

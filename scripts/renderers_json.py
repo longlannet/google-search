@@ -2,7 +2,7 @@
 import json
 from pathlib import Path
 
-from renderers import safe_print
+from io_common import safe_print
 
 
 def serialize_json(payload, compact=False):

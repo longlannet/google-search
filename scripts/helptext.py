@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-from renderers import safe_print
+from io_common import safe_print
 
 
 def print_overview():

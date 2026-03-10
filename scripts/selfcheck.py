@@ -4,7 +4,8 @@ import sys
 
 from args import parse_args as parse_search_args
 from args import UsageError
-from utils import SerperAPIError, do_request, load_api_keys, run_maps_reviews, run_maps_reviews_all, safe_print, summarize_response_shape
+from response_shapes import summarize_response_shape
+from utils import SerperAPIError, do_request, load_api_keys, run_maps_reviews, run_maps_reviews_all, safe_print
 
 
 SELF_CHECK_NOTES = [

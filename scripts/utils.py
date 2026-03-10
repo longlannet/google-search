@@ -2,14 +2,11 @@
 from args import ENDPOINTS, UsageError, get_usage, parse_args
 from client import SerperAPIError, do_request, load_api_keys
 from helptext import print_examples, print_overview
-from renderers import (
-    print_places,
-    print_reviews,
-    render_results,
-    safe_print,
-    summarize_response_shape,
-)
+from io_common import safe_print
+from renderers import print_places, print_reviews
+from renderers_pretty import render_results
 from renderers_json import emit_json_wrapper, emit_raw_json, save_output, serialize_json
+from response_shapes import summarize_response_shape
 from workflows import (
     emit_maps_reviews_all_json,
     emit_maps_reviews_all_raw,

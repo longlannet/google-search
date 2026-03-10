@@ -18,6 +18,8 @@
 - 增强 `selfcheck.py` 的参数错误路径验证
 - 为 `maps-reviews --all` 增加 `allSucceeded` 与 `failedCount` 状态字段
 - 在 `references/examples.md` 中补充 `{baseDir}` 含义说明
+- 恢复 `args.py` 默认区域设置为 `gl=cn`、`hl=zh-cn`
+- 将 JSON 输出与保存逻辑从 `renderers.py` 拆分到 `renderers_json.py`
 
 ## [v0.1.0] - 2026-03-10
 
