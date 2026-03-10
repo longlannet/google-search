@@ -27,10 +27,20 @@
 
 - 修复 `client.py` 中 API key 轮转索引持续增长的问题，改为按 key 数量回绕
 - 改进 200 响应但非 JSON 返回时的错误处理
+- 统一 `client.py` 对非 200 HTTP 响应的错误摘要行为
 - 增强 `selfcheck.py` 的参数错误路径验证
 - 为 `maps-reviews --all` 增加 `allSucceeded` 与 `failedCount` 状态字段
 - 在 `references/examples.md` 中补充 `{baseDir}` 含义说明
 - 恢复 `args.py` 默认区域设置为 `gl=cn`、`hl=zh-cn`
+- 修复 `search.py` 中 raw 错误输出未处理 `--save` 的行为不一致问题
+
+### Changed
+
+- 将 `client.py` 中的 User-Agent 调整为不绑定具体版本号
+- 在 `selfcheck.py` 中明确说明自检固定使用 `us/en` 的原因
+- 在 `helptext.py` 中补充 legacy positional 示例说明
+- 在 `workflows.py` 中补充 `ok` / `allSucceeded` / `failedCount` 的语义提示
+- 略微收紧 API key 文本格式校验
 
 ## [v0.1.0] - 2026-03-10
 

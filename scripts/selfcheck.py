@@ -11,6 +11,7 @@ from utils import SerperAPIError, do_request, load_api_keys, run_maps_reviews, r
 SELF_CHECK_NOTES = [
     '这是联网健康检查（smoke test），不是完整单元测试。',
     '结果会受到网络状态、API 配额、Serper 返回结构变化等因素影响。',
+    '自检固定使用 us/en，以尽量降低区域差异对公开测试结果的影响；这与程序默认的 cn/zh-cn 不同。',
 ]
 
 

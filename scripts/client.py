@@ -11,7 +11,7 @@ ENV_FILE = CONFIG_DIR / 'serper.env'
 RUNTIME_DIR = SCRIPT_DIR.parent / 'runtime'
 RR_INDEX_FILE = RUNTIME_DIR / 'serper_rr.idx'
 REQUEST_TIMEOUT_SECONDS = 20
-USER_AGENT = 'openclaw-skill-google-search/0.1'
+USER_AGENT = 'openclaw-skill-google-search'
 
 
 class SerperAPIError(Exception):
@@ -31,7 +31,10 @@ def _normalize_key_line(raw_line):
     elif line.lower().startswith('key:'):
         line = line.split(':', 1)[1].strip()
 
+    allowed_extra = {'-', '_'}
     if len(line) <= 20 or any(ch.isspace() for ch in line):
+        return None
+    if not all(ch.isalnum() or ch in allowed_extra for ch in line):
         return None
     return line
 
@@ -147,11 +150,7 @@ def do_request(endpoint, query, num, page=1, gl='cn', hl='zh-cn', place_id=None,
                     last_error = f'Invalid JSON response: {e}'
                     errors.append(f'...{key[-4:]} => Invalid JSON response')
                     continue
-            if response.status_code in [401, 403, 429]:
-                last_error = _summarize_http_error(response)
-                errors.append(f'...{key[-4:]} => {last_error}')
-                continue
-            if 500 <= response.status_code < 600:
+            if response.status_code >= 400:
                 last_error = _summarize_http_error(response)
                 errors.append(f'...{key[-4:]} => {last_error}')
                 continue

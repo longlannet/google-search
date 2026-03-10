@@ -87,7 +87,10 @@ def main():
                 save_output(text, save_path)
             safe_print(text)
         elif output_mode == 'raw':
-            safe_print(serialize_json({'error': str(e)}, compact=compact))
+            text = serialize_json({'error': str(e)}, compact=compact)
+            if save_path:
+                save_output(text, save_path)
+            safe_print(text)
         else:
             safe_print(f"❌ 请求失败: {e}")
         sys.exit(1)

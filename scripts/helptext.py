@@ -60,7 +60,7 @@ def print_examples():
     safe_print('')
     safe_print('# 普通搜索')
     safe_print('search.py web "OpenAI"')
-    safe_print('search.py "OpenAI" 3 1 us en')
+    safe_print('search.py "OpenAI" 3 1 us en  # legacy positional 示例：query num page gl hl')
     safe_print('')
     safe_print('# 新闻 / 图片 / 专利')
     safe_print('search.py news "OpenAI" --limit 5')

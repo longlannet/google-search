@@ -71,6 +71,7 @@ def run_maps_reviews(query, num=5, page=1, gl='cn', hl='zh-cn', pick=1):
 
 
 def run_maps_reviews_all(query, num=5, page=1, gl='cn', hl='zh-cn'):
+    # 注意：这里的 ok 表示工作流主流程已跑通；是否全部地点都成功请看 allSucceeded / failedCount。
     maps_data, maps_key = do_request('maps', query, num, page, gl, hl)
     places = maps_data.get('places', [])
     if not places:
@@ -149,6 +150,7 @@ def emit_maps_reviews_raw(result, compact=False, save_path=None):
 
 
 def emit_maps_reviews_all_json(result, compact=False, save_path=None):
+    # result.ok=True 表示 workflow 运行成功；若部分地点失败，请结合 allSucceeded / failedCount 判断。
     text = serialize_json(result, compact=compact)
     if save_path:
         save_output(text, save_path)
