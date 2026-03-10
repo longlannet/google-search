@@ -2,10 +2,12 @@
 import json
 import sys
 
-from args import parse_args as parse_search_args
 from args import UsageError
+from args import parse_args as parse_search_args
+from client import SerperAPIError, do_request, load_api_keys
+from io_common import safe_print
 from response_shapes import summarize_response_shape
-from utils import SerperAPIError, do_request, load_api_keys, run_maps_reviews, run_maps_reviews_all, safe_print
+from workflows import run_maps_reviews, run_maps_reviews_all
 
 
 SELF_CHECK_NOTES = [

@@ -1,25 +1,19 @@
 #!/usr/bin/env python3
 import sys
 
-from utils import (
-    SerperAPIError,
-    UsageError,
-    do_request,
-    emit_json_wrapper,
+from args import UsageError, parse_args
+from client import SerperAPIError, do_request
+from helptext import print_examples, print_overview
+from io_common import safe_print
+from renderers_json import emit_json_wrapper, emit_raw_json, save_output, serialize_json
+from renderers_pretty import render_results
+from workflows import (
     emit_maps_reviews_all_json,
     emit_maps_reviews_all_raw,
     emit_maps_reviews_json,
     emit_maps_reviews_raw,
-    emit_raw_json,
-    parse_args,
-    print_examples,
-    print_overview,
     render_maps_reviews_all_pretty,
     render_maps_reviews_pretty,
-    render_results,
-    safe_print,
-    save_output,
-    serialize_json,
     run_maps_reviews,
     run_maps_reviews_all,
 )

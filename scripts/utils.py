@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
+"""兼容导出层。新代码应优先直接从真实模块导入。"""
+
 from args import ENDPOINTS, UsageError, get_usage, parse_args
 from client import SerperAPIError, do_request, load_api_keys
 from helptext import print_examples, print_overview
 from io_common import safe_print
 from renderers import print_places, print_reviews
-from renderers_pretty import render_results
 from renderers_json import emit_json_wrapper, emit_raw_json, save_output, serialize_json
+from renderers_pretty import render_results
 from response_shapes import summarize_response_shape
 from workflows import (
     emit_maps_reviews_all_json,

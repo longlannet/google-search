@@ -41,6 +41,9 @@
 - 在 `helptext.py` 中补充 legacy positional 示例说明
 - 在 `workflows.py` 中补充 `ok` / `allSucceeded` / `failedCount` 的语义提示
 - 略微收紧 API key 文本格式校验
+- 将 `search.py` 与 `selfcheck.py` 改为直接依赖真实模块，减少对 `utils.py` 兼容层的依赖
+- 将 `utils.py` 收敛为兼容导出层，并在文件头明确其定位
+- 为 `workflows.py` 的批量失败条目增加 `errorType` / `errorMessage` 结构化字段
 
 ## [v0.1.0] - 2026-03-10
 

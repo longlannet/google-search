@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-from client import do_request
+from client import SerperAPIError, do_request
 from io_common import safe_print
 from renderers import print_places, print_reviews
 from renderers_json import save_output, serialize_json
@@ -15,6 +15,14 @@ def _select_place_payload(chosen):
         'placeId': chosen.get('placeId'),
         'cid': chosen.get('cid'),
         'fid': chosen.get('fid'),
+    }
+
+
+def _workflow_error_payload(error):
+    return {
+        'errorType': type(error).__name__,
+        'errorMessage': str(error),
+        'error': f'{type(error).__name__}: {error}',
     }
 
 
@@ -115,8 +123,8 @@ def run_maps_reviews_all(query, num=5, page=1, gl='cn', hl='zh-cn'):
                 'ok': False,
                 'pick': idx,
                 'selectedPlace': _select_place_payload(chosen),
-                'error': f'{type(e).__name__}: {e}',
                 'reviews': None,
+                **_workflow_error_payload(e),
             })
 
     all_succeeded = failed_count == 0
