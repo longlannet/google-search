@@ -1,5 +1,10 @@
 # openclaw-skill-google-search
 
+[![Release](https://img.shields.io/github/v/release/longlannet/openclaw-skill-google-search?label=release)](https://github.com/longlannet/openclaw-skill-google-search/releases)
+[![License](https://img.shields.io/github/license/longlannet/openclaw-skill-google-search)](./LICENSE)
+[![Python](https://img.shields.io/badge/python-3.x-blue)](https://www.python.org/)
+[![OpenClaw Skill](https://img.shields.io/badge/OpenClaw-Skill-7c3aed)](https://github.com/longlannet/openclaw-skill-google-search)
+
 > 基于 Serper.dev 的 OpenClaw Google 搜索技能，支持网页、新闻、图片、地图、评论、网页提取、Lens 反查等能力。
 
 `openclaw-skill-google-search` 是一个面向 OpenClaw / AgentSkills 的技能仓库，用来把 [Serper.dev](https://serper.dev) 封装成一个结构清晰、可复用、便于维护的 Google 搜索 skill。
