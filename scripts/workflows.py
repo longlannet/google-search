@@ -188,8 +188,7 @@ def render_maps_reviews_pretty(result, pick, gl, hl, limit=10):
     print_places([selected], limit=1, title='目标地点', show_ids=True)
     reviews = (result.get('reviews') or {}).get('reviews', []) or (result.get('reviews') or {}).get('organic', [])
     print_reviews(reviews, limit=limit)
-    suffixes = result.get('usedKeySuffixes', {})
-    safe_print(f"📡 数据来源: Google (via Serper.dev) | endpoint=maps-reviews | mapsKey=...{suffixes.get('maps','?')} | reviewsKey=...{suffixes.get('reviews','?')} | gl={gl} hl={hl}")
+    safe_print(f"📡 数据来源: Google (via Serper.dev) | endpoint=maps-reviews | gl={gl} hl={hl}")
 
 
 def render_maps_reviews_all_pretty(result, gl, hl, limit=5):
@@ -215,5 +214,4 @@ def render_maps_reviews_all_pretty(result, gl, hl, limit=5):
         reviews = (entry.get('reviews') or {}).get('reviews', []) or (entry.get('reviews') or {}).get('organic', [])
         print_reviews(reviews, limit=limit)
 
-    suffixes = result.get('usedKeySuffixes', {})
-    safe_print(f"📡 数据来源: Google (via Serper.dev) | endpoint=maps-reviews --all | mapsKey=...{suffixes.get('maps','?')} | reviewKeys={suffixes.get('reviews', [])} | gl={gl} hl={hl}")
+    safe_print(f"📡 数据来源: Google (via Serper.dev) | endpoint=maps-reviews --all | gl={gl} hl={hl}")

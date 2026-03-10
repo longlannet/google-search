@@ -11,17 +11,31 @@ def _first_present(item, *keys, default=None):
 
 
 def _join_meta(*values):
-    return ' · '.join(str(v) for v in values if v not in [None, ''])
+    cleaned = []
+    for value in values:
+        if value is None:
+            continue
+        if isinstance(value, str):
+            value = value.strip()
+            if not value:
+                continue
+        cleaned.append(str(value))
+    return ' · '.join(cleaned)
 
 
 def print_knowledge_graph(kg):
     if not kg:
         return
     safe_print('\n🧠 知识卡片:')
-    safe_print(f"   标题: {kg.get('title')}")
-    safe_print(f"   类型: {kg.get('type')}")
-    if kg.get('description'):
-        safe_print(f"   描述: {kg.get('description')}")
+    title = kg.get('title')
+    kind = kg.get('type')
+    description = kg.get('description')
+    if title:
+        safe_print(f"   标题: {title}")
+    if kind:
+        safe_print(f"   类型: {kind}")
+    if description:
+        safe_print(f"   描述: {description}")
     attrs = kg.get('attributes', {})
     if isinstance(attrs, dict):
         for k, v in attrs.items():

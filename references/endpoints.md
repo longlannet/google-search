@@ -67,6 +67,31 @@ Use this file when you need endpoint-specific behavior, special parameters, or p
   - Google Lens-style reverse image lookup
   - Payload uses `url`
 
+## Aliases
+
+These CLI aliases are accepted by the parser:
+
+- `web` -> `search`
+- `image` -> `images`
+- `video` -> `videos`
+- `place` -> `places`
+- `map` -> `maps`
+- `review` -> `reviews`
+- `suggest` -> `autocomplete`
+- `patent` -> `patents`
+- `page` -> `webpage`
+- `cheatsheet` / `quickref` / `help` -> `overview`
+- `map-reviews` -> `maps-reviews`
+
+## Default locale behavior
+
+Unless overridden by CLI flags, the current defaults are:
+
+- `gl=cn`
+- `hl=zh-cn`
+
+That means result ranking and wording may skew toward Chinese-region results by default.
+
 ## Output modes
 
 All endpoints support these output styles through the CLI:
@@ -76,6 +101,11 @@ All endpoints support these output styles through the CLI:
 - `--raw`
 - `--compact`
 - `--save <file>`
+
+Notes:
+
+- pretty output is intended for humans and does not show API key suffixes by default
+- if you need round-robin fallback diagnostics during debugging, set `SERPER_DEBUG_RR=1`
 
 ## Special cases
 
@@ -96,3 +126,13 @@ Use this when you want reviews but only have a human query like:
 - `bookstore near bund`
 
 The workflow will find places first, then resolve the required review identifiers automatically.
+
+### `webpage`
+
+- Expects a URL-style input
+- A successful request may still return empty or weak text if extraction quality is poor for that page
+
+### `lens`
+
+- Expects a URL-style input
+- Empty matches do not necessarily mean request failure; sometimes the lookup simply returns no useful candidate set

@@ -13,3 +13,6 @@ scripts/__pycache__/
 venv/
 .venv/
 .venv-test/
+
+# Test cache
+.pytest_cache/

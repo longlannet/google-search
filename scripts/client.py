@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import json
 import os
+import sys
 from pathlib import Path
 
 import requests
@@ -12,6 +13,7 @@ RUNTIME_DIR = SCRIPT_DIR.parent / 'runtime'
 RR_INDEX_FILE = RUNTIME_DIR / 'serper_rr.idx'
 REQUEST_TIMEOUT_SECONDS = 20
 USER_AGENT = 'openclaw-skill-google-search'
+DEBUG_RR_ENV = 'SERPER_DEBUG_RR'
 
 
 class SerperAPIError(Exception):
@@ -19,6 +21,15 @@ class SerperAPIError(Exception):
 
 
 _session = requests.Session()
+
+
+def _rr_debug_enabled():
+    return os.environ.get(DEBUG_RR_ENV, '').strip().lower() in {'1', 'true', 'yes', 'on'}
+
+
+def _rr_debug(message):
+    if _rr_debug_enabled():
+        print(f'[serper-rr] {message}', file=sys.stderr)
 
 
 def _normalize_key_line(raw_line):
@@ -31,10 +42,9 @@ def _normalize_key_line(raw_line):
     elif line.lower().startswith('key:'):
         line = line.split(':', 1)[1].strip()
 
-    allowed_extra = {'-', '_'}
-    if len(line) <= 20 or any(ch.isspace() for ch in line):
-        return None
-    if not all(ch.isalnum() or ch in allowed_extra for ch in line):
+    # Keep validation intentionally loose so future API key formats do not
+    # get rejected silently by local parsing rules.
+    if not line or any(ch.isspace() for ch in line):
         return None
     return line
 
@@ -64,25 +74,31 @@ def get_next_key_index(total_keys):
     idx = 0
     try:
         import fcntl
+
         RUNTIME_DIR.mkdir(parents=True, exist_ok=True)
         with open(RR_INDEX_FILE, 'a+') as f:
             fcntl.flock(f, fcntl.LOCK_EX)
-            f.seek(0)
-            txt = f.read().strip()
-            if txt:
-                try:
-                    idx = int(txt)
-                except ValueError:
-                    idx = 0
-            current_idx = idx % total_keys
-            next_idx = (current_idx + 1) % total_keys
-            f.seek(0)
-            f.truncate()
-            f.write(str(next_idx))
-            fcntl.flock(f, fcntl.LOCK_UN)
-            return current_idx
-    except Exception:
-        pass
+            try:
+                f.seek(0)
+                txt = f.read().strip()
+                if txt:
+                    try:
+                        idx = int(txt)
+                    except ValueError:
+                        idx = 0
+                current_idx = idx % total_keys
+                next_idx = (current_idx + 1) % total_keys
+                f.seek(0)
+                f.truncate()
+                f.write(str(next_idx))
+                return current_idx
+            finally:
+                fcntl.flock(f, fcntl.LOCK_UN)
+    except Exception as e:
+        # Round-robin state is a best-effort optimization only. If locking,
+        # parsing, or runtime file access fails, we intentionally fall back to
+        # key index 0 rather than failing the whole request path.
+        _rr_debug(f'fallback to key index 0 because RR state failed: {type(e).__name__}: {e}')
     return 0
 
 

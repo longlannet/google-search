@@ -19,6 +19,8 @@ python3 {baseDir}/scripts/search.py patents "OpenAI" --raw
 ```bash
 python3 {baseDir}/scripts/search.py maps "coffee shanghai"
 python3 {baseDir}/scripts/search.py reviews --place-id ChIJ...
+python3 {baseDir}/scripts/search.py reviews --cid 1234567890
+python3 {baseDir}/scripts/search.py reviews --fid 0x123456:0xabcdef
 python3 {baseDir}/scripts/search.py maps-reviews "coffee shanghai" --pick 2 --limit 3
 python3 {baseDir}/scripts/search.py maps-reviews "coffee shanghai" --all --limit 2
 ```
@@ -35,6 +37,7 @@ python3 {baseDir}/scripts/search.py lens "https://example.com/image.jpg" --json 
 ```bash
 python3 {baseDir}/scripts/search.py web "OpenAI" --json --save /tmp/serper.json
 python3 {baseDir}/scripts/search.py news "OpenAI" --raw --compact
+python3 {baseDir}/scripts/search.py reviews --place-id ChIJ... --raw --save /tmp/reviews.json
 python3 {baseDir}/scripts/search.py maps-reviews "coffee shanghai" --json --compact
 python3 {baseDir}/scripts/search.py maps-reviews "coffee shanghai" --all --raw --compact
 ```
@@ -53,3 +56,5 @@ python3 {baseDir}/scripts/selfcheck.py --full --compact
 - `--json` and `--raw` are mutually exclusive.
 - `maps-reviews --all` cannot be combined with `--pick`.
 - `reviews` requires `--place-id`, `--cid`, or `--fid`.
+- pretty output does not show API key suffixes by default.
+- set `SERPER_DEBUG_RR=1` if you need round-robin fallback diagnostics during debugging.

@@ -9,6 +9,8 @@
 
 `openclaw-skill-google-search` 是一个面向 OpenClaw / AgentSkills 的技能仓库，用来把 [Serper.dev](https://serper.dev) 封装成一个结构清晰、可复用、便于维护的 Google 搜索 skill。
 
+说明：本仓库主要面向 OpenClaw 本地技能体系；如果你要迁移到更严格的通用 AgentSkills 规范环境，可能需要按目标平台要求微调 `SKILL.md` 的 frontmatter。
+
 它适合这些场景：
 
 - 给 OpenClaw 增加实时 Google 搜索能力
@@ -22,6 +24,7 @@
 - 支持 pretty / json / raw / compact 输出
 - 支持 `maps-reviews` 地图到评论工作流
 - 提供 `selfcheck.py` 自检脚本
+- 提供轻量本地测试与最小 GitHub Actions 校验
 - 提供适合 agent 按需读取的参考文档
 - 提供中文 README、安装说明和 changelog
 
@@ -186,17 +189,7 @@ python3 scripts/search.py web "OpenAI"
 python3 scripts/search.py "OpenAI" 3 1 us en
 ```
 
-### 新闻搜索
-
-```bash
-python3 scripts/search.py news "OpenAI" --limit 5
-```
-
-### 图片搜索
-
-```bash
-python3 scripts/search.py images "cute cat" --json
-```
+更多可复制示例见：[`references/examples.md`](./references/examples.md)
 
 ### 网页正文提取
 
@@ -219,6 +212,8 @@ python3 scripts/search.py lens "https://example.com/image.jpg" --json --compact
 ```bash
 python3 scripts/search.py maps "coffee shanghai"
 ```
+
+更多 maps / reviews / workflow 示例见：[`references/examples.md`](./references/examples.md)
 
 ### 直接查评论
 
@@ -262,6 +257,8 @@ python3 scripts/search.py web "OpenAI" --json
 ```bash
 python3 scripts/search.py news "OpenAI" --raw
 ```
+
+更多 machine-readable 示例见：[`references/examples.md`](./references/examples.md)
 
 ### 紧凑 JSON
 
@@ -318,6 +315,11 @@ python3 scripts/selfcheck.py --full
 - `maps-reviews-pick2`
 - `maps-reviews-all`
 
+此外，仓库还包含本地轻量测试：
+
+- `tests/test_args.py`
+- `tests/test_workflows.py`
+
 ---
 
 ## OpenClaw 集成步骤
@@ -371,9 +373,10 @@ config/serper.env
 
 ## 限制与注意事项
 
-- 默认区域参数目前偏中文环境：`gl=cn`、`hl=zh-cn`
+- 默认区域参数目前偏中文环境：`gl=cn`、`hl=zh-cn`；如需更接近英文/国际结果，请显式传入 `--gl us --hl en`
 - `reviews` 不能只传普通文本查询，必须提供 `--place-id`、`--cid` 或 `--fid` 之一
 - `maps-reviews --all` 会对多个地点逐个抓评论，耗时和 credits 消耗都会更高
+- pretty 输出默认不再显示 API key suffix；如需排查 round-robin fallback，可使用环境变量 `SERPER_DEBUG_RR=1`
 - `lens` 返回空结果不一定代表请求失败，有时只是没有匹配项
 - `selfcheck.py` 更接近联网健康检查（smoke test），不是完全离线、可重复的单元测试
 
@@ -395,20 +398,20 @@ config/serper.env
 ## 版本发布
 
 - 版本变更记录见 [CHANGELOG.md](./CHANGELOG.md)
-- 当前最新发布版本为 `v0.1.3`
+- 当前发布版本请以 GitHub Releases / release badge 为准
 - GitHub Releases 可用于查看阶段性发布说明
 
 ---
 
-## 结构冻结说明
+## 维护说明
 
-当前仓库的脚本结构已基本定型，后续维护建议优先：
+当前仓库的脚本结构已基本定型，后续维护更建议优先：
 
 - 增加功能
 - 补充文档
 - 增量补测试
 
-除非出现明显维护成本问题，否则**不再继续进行大规模结构重构**。
+如果未来确实出现明显维护成本问题，再考虑结构调整。
 
 当前推荐结构如下：
 

@@ -19,6 +19,25 @@ from workflows import (
 )
 
 
+def _emit_error(output_mode, endpoint, error_text, compact=False, save_path=None):
+    if output_mode == 'json':
+        payload = {'ok': False, 'endpoint': endpoint, 'error': error_text}
+        text = serialize_json(payload, compact=compact)
+        if save_path:
+            save_output(text, save_path)
+        safe_print(text)
+        return
+
+    if output_mode == 'raw':
+        text = serialize_json({'error': error_text}, compact=compact)
+        if save_path:
+            save_output(text, save_path)
+        safe_print(text)
+        return
+
+    safe_print(f"❌ 请求失败: {error_text}")
+
+
 def main():
     try:
         args = parse_args(sys.argv[1:])
@@ -74,19 +93,7 @@ def main():
     try:
         data, used_key = do_request(endpoint, query, num, page, gl, hl, place_id=place_id, cid=cid, fid=fid)
     except SerperAPIError as e:
-        if output_mode == 'json':
-            payload = {'ok': False, 'endpoint': endpoint, 'error': str(e)}
-            text = serialize_json(payload, compact=compact)
-            if save_path:
-                save_output(text, save_path)
-            safe_print(text)
-        elif output_mode == 'raw':
-            text = serialize_json({'error': str(e)}, compact=compact)
-            if save_path:
-                save_output(text, save_path)
-            safe_print(text)
-        else:
-            safe_print(f"❌ 请求失败: {e}")
+        _emit_error(output_mode, endpoint, str(e), compact=compact, save_path=save_path)
         sys.exit(1)
 
     if output_mode == 'raw':
@@ -99,7 +106,7 @@ def main():
 
     safe_print(f'🔍 Google (Serper) {endpoint} 搜索: {query} (Page {page})...')
     render_results(endpoint, data, limit=limit)
-    safe_print(f'📡 数据来源: Google (via Serper.dev) | endpoint={endpoint} | Key: ...{used_key[-4:]} | gl={gl} hl={hl}')
+    safe_print(f'📡 数据来源: Google (via Serper.dev) | endpoint={endpoint} | gl={gl} hl={hl}')
 
 
 if __name__ == '__main__':

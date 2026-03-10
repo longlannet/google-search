@@ -4,6 +4,30 @@
 
 格式参考 Keep a Changelog，版本号建议遵循 Semantic Versioning（语义化版本）。
 
+## [v1.2.0] - 2026-03-10
+
+### Changed
+
+- 收紧 `args.py` 中 legacy positional 识别逻辑，避免将不完整或不典型输入误判为旧版搜索形式
+- 改进 CLI 参数错误输出，保留更具体的 argparse 报错信息并继续附带帮助文本
+- 隐藏 pretty 输出中的 API key suffix，使默认终端输出更偏向正式用户界面而非调试信息
+- 为 `client.py` 中的 round-robin key 轮转 fallback 增加更明确的注释与可选调试输出（`SERPER_DEBUG_RR=1`）
+- 收敛 `helptext.py`、`README.md` 与 `references/examples.md` 中的示例分工，减少重复命令示例
+- 调整 `selfcheck.py` 内部命名与结果记录逻辑，使代码语义更清晰、结果聚合更稳
+
+### Added
+
+- 为 `tests/test_args.py` 补充更严格的 legacy 识别、`cid`/`fid` 参数解析与额外边界路径测试
+- 为 `tests/test_workflows.py` 补充 `cid`/`fid` only 场景、`organic` reviews 渲染路径与 RR debug 开关测试
+- 在 GitHub Actions 工作流中增加关键文件存在检查与 `py_compile` 语法检查
+
+### Fixed
+
+- 修复/改善 `renderers_pretty.py` 中部分空值与空白字符串的 pretty 输出细节
+- 改进 `search.py` 中错误输出逻辑的复用方式，统一 `json` / `raw` / pretty 模式下的错误发射行为
+- 改善 workflow pretty 输出对 `organic` reviews 形态的兼容性与输出一致性
+- 清理 `.pytest_cache` 并补充 `.gitignore` 忽略规则，改善仓库发布卫生
+
 ## [v0.1.3] - 2026-03-10
 
 ### Changed

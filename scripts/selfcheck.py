@@ -17,7 +17,7 @@ SELF_CHECK_NOTES = [
 ]
 
 
-def parse_args(argv):
+def parse_selfcheck_args(argv):
     full = '--full' in argv
     compact = '--compact' in argv
     return {
@@ -35,14 +35,15 @@ def emit(summary, compact=False):
 
 def record_result(summary, endpoint, payload, ok=None):
     summary['results'][endpoint] = payload
-    if ok is False:
+    effective_ok = payload.get('ok') if isinstance(payload, dict) and 'ok' in payload else ok
+    if effective_ok is False:
         summary['ok'] = False
-        error_text = payload.get('error', 'failed')
+        error_text = payload.get('error', 'failed') if isinstance(payload, dict) else 'failed'
         summary['errors'].append(f'{endpoint}: {error_text}')
 
 
 def main():
-    args = parse_args(sys.argv[1:])
+    args = parse_selfcheck_args(sys.argv[1:])
     full = args['full']
     compact = args['compact']
 

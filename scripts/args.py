@@ -42,8 +42,13 @@ class UsageError(Exception):
     pass
 
 
+class _ArgumentParser(argparse.ArgumentParser):
+    def error(self, message):
+        raise UsageError(f'{message}\n\n{self.format_help()}')
+
+
 def build_parser():
-    parser = argparse.ArgumentParser(add_help=True, prog='search.py')
+    parser = _ArgumentParser(add_help=True, prog='search.py')
     parser.add_argument('mode', nargs='?', help='Search mode / endpoint')
     parser.add_argument('query', nargs='?', help='Search query or URL depending on endpoint')
     parser.add_argument('num_pos', nargs='?', help='Legacy positional num')
@@ -89,10 +94,40 @@ def _require_positive(name, value):
 def _looks_like_legacy_search(ns):
     if ns.mode is None:
         return False
-    if ns.mode.lower() in LEGACY_SEARCH_ALIASES:
+    mode_lower = ns.mode.lower()
+    if mode_lower in ENDPOINTS or mode_lower in LEGACY_SEARCH_ALIASES:
         return False
-    legacy_tail = [ns.query, ns.num_pos, ns.page_pos, ns.gl_pos, ns.hl_pos]
-    return any(item is not None for item in legacy_tail)
+
+    # Legacy positional form is intentionally narrow:
+    #   query [num] [page] [gl] [hl]
+    # We only treat an unknown first token as a legacy query when at least one
+    # following positional token exists and those tokens look like the classic
+    # numeric / locale tail rather than an accidental endpoint typo.
+    if ns.query is None:
+        return False
+
+    numeric_slots = [ns.query, ns.num_pos]
+    locale_slots = [ns.page_pos, ns.gl_pos, ns.hl_pos]
+
+    def _is_int_like(value):
+        if value is None:
+            return True
+        try:
+            int(value)
+            return True
+        except Exception:
+            return False
+
+    def _is_locale_like(value):
+        if value is None:
+            return True
+        value = str(value).strip().lower()
+        if not value:
+            return False
+        return value.replace('-', '').isalnum()
+
+    has_tail = any(item is not None for item in [ns.query, ns.num_pos, ns.page_pos, ns.gl_pos, ns.hl_pos])
+    return has_tail and all(_is_int_like(value) for value in numeric_slots) and all(_is_locale_like(value) for value in locale_slots)
 
 
 def parse_args(argv):
@@ -100,10 +135,7 @@ def parse_args(argv):
         raise UsageError(get_usage())
 
     parser = build_parser()
-    try:
-        ns = parser.parse_args(argv)
-    except SystemExit:
-        raise UsageError(get_usage())
+    ns = parser.parse_args(argv)
 
     if not ns.mode:
         raise UsageError(get_usage())
