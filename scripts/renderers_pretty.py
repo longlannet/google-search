@@ -104,9 +104,9 @@ def print_news(items, limit=5):
         title = item.get('title', '无标题')
         link = item.get('link', '#')
         snippet = item.get('snippet') or ''
-        source = item.get('source') or ''
-        date = item.get('date') or ''
-        meta = ' · '.join([x for x in [source, date] if x])
+        source = item.get('source')
+        date = item.get('date')
+        meta = _join_meta(source, date)
         safe_print(f'{i}. {title}')
         if meta:
             safe_print(f'   🏷️ {meta}')
@@ -298,9 +298,9 @@ def print_lens_results(data, limit=10):
         title = item.get('title', '无标题')
         link = item.get('link') or item.get('imageUrl') or '#'
         snippet = item.get('snippet') or ''
-        source = item.get('source') or item.get('domain') or ''
+        source = _first_present(item, 'source', 'domain')
         safe_print(f'{i}. {title}')
-        meta = ' · '.join([x for x in [source] if x])
+        meta = _join_meta(source)
         if meta:
             safe_print(f'   🏷️ {meta}')
         safe_print(f'   🔗 {link}')
