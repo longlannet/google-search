@@ -2,6 +2,18 @@
 from io_common import safe_print
 
 
+def _first_present(item, *keys, default=None):
+    for key in keys:
+        value = item.get(key)
+        if value is not None:
+            return value
+    return default
+
+
+def _join_meta(*values):
+    return ' · '.join(str(v) for v in values if v not in [None, ''])
+
+
 def print_knowledge_graph(kg):
     if not kg:
         return
@@ -111,7 +123,7 @@ def print_images(items, limit=5):
     for i, item in enumerate(items[:limit], start=1):
         title = item.get('title', '无标题')
         link = item.get('link') or item.get('imageUrl') or '#'
-        source = item.get('source') or item.get('domain') or ''
+        source = _first_present(item, 'source', 'domain')
         safe_print(f'{i}. {title}')
         if source:
             safe_print(f'   🏷️ {source}')
@@ -127,9 +139,9 @@ def print_videos(items, limit=5):
         title = item.get('title', '无标题')
         link = item.get('link', '#')
         snippet = item.get('snippet') or ''
-        source = item.get('source') or ''
-        date = item.get('date') or ''
-        meta = ' · '.join([x for x in [source, date] if x])
+        source = item.get('source')
+        date = item.get('date')
+        meta = _join_meta(source, date)
         safe_print(f'{i}. {title}')
         if meta:
             safe_print(f'   🏷️ {meta}')
@@ -146,11 +158,11 @@ def print_shopping(items, limit=5):
     for i, item in enumerate(items[:limit], start=1):
         title = item.get('title', '无标题')
         link = item.get('link', '#')
-        price = item.get('price') or ''
-        source = item.get('source') or item.get('seller') or ''
-        delivery = item.get('delivery') or ''
+        price = item.get('price')
+        source = _first_present(item, 'source', 'seller')
+        delivery = item.get('delivery')
         safe_print(f'{i}. {title}')
-        meta = ' · '.join([x for x in [price, source, delivery] if x])
+        meta = _join_meta(price, source, delivery)
         if meta:
             safe_print(f'   🏷️ {meta}')
         safe_print(f'   🔗 {link}')
@@ -163,22 +175,22 @@ def print_places(items, limit=5, title='地点结果', show_ids=True):
     safe_print(f'📍 {title}:')
     for i, item in enumerate(items[:limit], start=1):
         title_text = item.get('title') or item.get('name') or '无标题'
-        address = item.get('address') or ''
-        phone = item.get('phoneNumber') or item.get('phone') or ''
-        rating = item.get('rating') or ''
-        rating_count = item.get('ratingCount') or ''
-        place_id = item.get('placeId') or ''
-        cid = item.get('cid') or ''
-        fid = item.get('fid') or ''
-        link = item.get('link') or item.get('website') or '#'
+        address = _first_present(item, 'address', default='')
+        phone = _first_present(item, 'phoneNumber', 'phone', default='')
+        rating = item.get('rating')
+        rating_count = item.get('ratingCount')
+        place_id = _first_present(item, 'placeId', default='')
+        cid = _first_present(item, 'cid', default='')
+        fid = _first_present(item, 'fid', default='')
+        link = _first_present(item, 'link', 'website', default='#')
         extras = []
         if address:
             extras.append(address)
         if phone:
             extras.append(phone)
-        if rating:
+        if rating is not None:
             rating_text = f'评分 {rating}'
-            if rating_count:
+            if rating_count is not None and rating_count != '':
                 rating_text += f'（{rating_count}）'
             extras.append(rating_text)
         safe_print(f'{i}. {title_text}')
@@ -200,19 +212,19 @@ def print_reviews(items, limit=5):
         return
     safe_print('⭐ 评论结果:')
     for i, item in enumerate(items[:limit], start=1):
-        author = item.get('author') or item.get('user') or item.get('name') or item.get('title') or '匿名用户'
+        author = _first_present(item, 'author', 'user', 'name', 'title', default='匿名用户')
         if isinstance(author, dict):
             author = author.get('name') or author.get('title') or author.get('user') or str(author)
-        rating = item.get('rating') or ''
-        date = item.get('date') or item.get('publishedAt') or ''
-        text = item.get('text') or item.get('snippet') or item.get('review') or ''
-        source = item.get('source') or item.get('sourceName') or ''
-        photos = item.get('images') or item.get('photos') or []
+        rating = item.get('rating')
+        date = _first_present(item, 'date', 'publishedAt', default='')
+        text = _first_present(item, 'text', 'snippet', 'review', default='')
+        source = _first_present(item, 'source', 'sourceName', default='')
+        photos = _first_present(item, 'images', 'photos', default=[]) or []
         local_guide = item.get('localGuide')
-        contribs = item.get('reviews') or item.get('reviewCount') or item.get('contributions') or ''
+        contribs = _first_present(item, 'reviews', 'reviewCount', 'contributions')
         safe_print(f'{i}. {author}')
         meta_bits = []
-        if rating:
+        if rating is not None:
             meta_bits.append(f'评分 {rating}')
         if date:
             meta_bits.append(str(date))
@@ -220,7 +232,7 @@ def print_reviews(items, limit=5):
             meta_bits.append(str(source))
         if local_guide:
             meta_bits.append('本地向导')
-        if contribs:
+        if contribs is not None and contribs != '':
             meta_bits.append(f'贡献 {contribs}')
         if meta_bits:
             safe_print(f"   🏷️ {' · '.join(meta_bits)}")

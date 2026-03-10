@@ -17,6 +17,7 @@
 ### Added
 
 - 新增轻量参数测试 `tests/test_args.py`
+- 新增轻量 workflow 测试 `tests/test_workflows.py`
 - 新增最小 GitHub Actions 工作流 `.github/workflows/test.yml`
 - 新增 `scripts/io_common.py`
 - 新增 `scripts/renderers_pretty.py`
@@ -44,6 +45,7 @@
 - 将 `search.py` 与 `selfcheck.py` 改为直接依赖真实模块，减少对 `utils.py` 兼容层的依赖
 - 将 `utils.py` 收敛为兼容导出层，并在文件头明确其定位
 - 为 `workflows.py` 的批量失败条目增加 `errorType` / `errorMessage` 结构化字段
+- 清理 `renderers_pretty.py` 中部分 `or ''` / falsy 数值语义问题，并补充轻量 helper 降低重复逻辑
 
 ## [v0.1.0] - 2026-03-10
 
