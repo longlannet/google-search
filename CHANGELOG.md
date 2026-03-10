@@ -4,6 +4,18 @@
 
 格式参考 Keep a Changelog，版本号建议遵循 Semantic Versioning（语义化版本）。
 
+## [v0.1.1] - 2026-03-10
+
+### Changed
+
+- 回滚 `SKILL.md` frontmatter 收紧调整，恢复 `homepage` 与 `metadata.openclaw` 字段
+- 保留 `client.py` 中 API key 轮转索引回绕修复
+- 保留非 JSON 响应的更明确错误处理
+- 保留 `selfcheck.py` 的异常路径验证增强
+- 保留 `maps-reviews --all` 的 `allSucceeded` / `failedCount` 状态字段
+- 在 `references/examples.md` 中补充 `{baseDir}` 含义说明
+- README 删除部分冗余内容，并明确 MIT License 说明
+
 ## [v0.1.0] - 2026-03-10
 
 ### Added
