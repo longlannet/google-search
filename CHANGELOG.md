@@ -10,6 +10,18 @@
 
 - 恢复 `SKILL.md` 中的 `homepage` 与 `metadata.openclaw` 字段
 - 优化 README、示例说明与许可证文案
+- 将渲染相关脚本进一步重构为 `io_common.py`、`renderers_pretty.py`、`renderers_json.py`、`response_shapes.py` 四层结构
+- 将 `renderers.py` 调整为兼容聚合层，保留旧导入路径的同时收紧内部职责边界
+- 统一一部分 CLI 输出文案为中文表述，例如“无标题”“图片识别结果”“配额消耗”等
+
+### Added
+
+- 新增轻量参数测试 `tests/test_args.py`
+- 新增最小 GitHub Actions 工作流 `.github/workflows/test.yml`
+- 新增 `scripts/io_common.py`
+- 新增 `scripts/renderers_pretty.py`
+- 新增 `scripts/renderers_json.py`
+- 新增 `scripts/response_shapes.py`
 
 ### Fixed
 
@@ -19,7 +31,6 @@
 - 为 `maps-reviews --all` 增加 `allSucceeded` 与 `failedCount` 状态字段
 - 在 `references/examples.md` 中补充 `{baseDir}` 含义说明
 - 恢复 `args.py` 默认区域设置为 `gl=cn`、`hl=zh-cn`
-- 将 JSON 输出与保存逻辑从 `renderers.py` 拆分到 `renderers_json.py`
 
 ## [v0.1.0] - 2026-03-10
 
