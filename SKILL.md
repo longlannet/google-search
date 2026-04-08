@@ -9,47 +9,34 @@ metadata:
       bins: ["python3"]
 ---
 
-# Google Search Skill (Serper.dev)
+# Google Search
 
-Use this skill when you need Google search results through Serper.dev, including web, news, images, maps, reviews, autocomplete, webpage extraction, Lens-style lookup, patents, shopping, and scholar results.
+Use this skill for real-time Google search through Serper.dev.
 
-Keep the skill lean: use the bundled scripts for execution, and read the reference files only when you need detailed endpoint behavior or copy-paste examples.
+## When to use
+Use this skill when the user wants:
+- general web search
+- news, images, videos, shopping, scholar, or patents
+- places, maps, reviews, or maps-to-reviews workflows
+- webpage extraction or Lens-style lookup
 
-## Core workflow
+## Quick start
+```bash
+bash scripts/install.sh
+.venv/bin/python scripts/search.py web "OpenAI"
+.venv/bin/python scripts/search.py news "OpenAI"
+.venv/bin/python scripts/selfcheck.py
+```
 
+## Workflow
 1. Run `scripts/search.py` with the appropriate mode.
 2. Use default pretty output for human-readable results.
 3. Use `--json` or `--raw` for machine-readable output.
 4. Use `scripts/selfcheck.py` when validating keys, endpoints, or workflow health.
 
-## Supported endpoint groups
-
-- Core search: `web` / `search`, `images`, `news`, `videos`, `shopping`, `scholar`, `patents`
-- Local and map search: `places`, `maps`, `reviews`, `maps-reviews`
-- Suggestion and extraction: `autocomplete`, `webpage`, `lens`
-- Help surfaces: `overview`, `cheatsheet`, `quickref`, `help`, `examples`
-
-## Important rules
-
+## Notes
 - `reviews` requires one of `--place-id`, `--cid`, or `--fid`.
-- `maps-reviews` is a skill workflow, not a native Serper endpoint.
-- `maps-reviews` defaults to the first maps result, supports `--pick`, and supports batch mode via `--all`.
+- `maps-reviews` is a workflow, not a native Serper endpoint.
 - `webpage` and `lens` require a URL-style query.
-- `--json` and `--raw` are mutually exclusive.
-- `maps-reviews --all` cannot be combined with `--pick`.
-
-## References
-
-Read these only when needed:
-
-- `references/endpoints.md`
-  - Read when you need endpoint-specific behavior, payload expectations, or special rules.
-- `references/examples.md`
-  - Read when you need concrete command examples, machine-readable examples, or self-check examples.
-
-## Bundled scripts
-
-- `scripts/search.py` — main CLI entrypoint
-- `scripts/selfcheck.py` — endpoint and workflow health check
-
-Use `config/serper.env` to provide one or more API keys.
+- Read `references/endpoints.md` and `references/examples.md` only when needed.
+- Use `config/serper.env` to provide one or more API keys.

@@ -5,18 +5,9 @@
 [![Python](https://img.shields.io/badge/python-3.x-blue)](https://www.python.org/)
 [![OpenClaw Skill](https://img.shields.io/badge/OpenClaw-Skill-7c3aed)](https://github.com/longlannet/google-search)
 
-> 一个基于 Serper.dev 的 OpenClaw Google 搜索 skill，支持网页、新闻、图片、地图、评论、网页提取与 Lens 反查。
+> Real-time Google search through Serper.dev for OpenClaw.
 
-`google-search` 是一个面向 OpenClaw 的 Google 搜索 skill 仓库，用来把 [Serper.dev](https://serper.dev) 封装成结构清晰、可复用、便于维护的本地技能。
-
-说明：本仓库主要面向 OpenClaw 本地 skills 目录使用；如果你要迁移到更严格的通用 AgentSkills 规范环境，可能需要按目标平台要求微调 `SKILL.md` 的 frontmatter。
-
-它适合这些场景：
-
-- 给 OpenClaw 增加实时 Google 搜索能力
-- 把 Serper 搜索接口整理成可复用技能
-- 在私有仓库或公开仓库中长期维护一个独立 skill
-- 同时兼顾人工阅读输出与机器可处理输出
+`google-search` is an OpenClaw skill repository that wraps [Serper.dev](https://serper.dev) into a reusable local workflow for web, news, images, maps, reviews, webpage extraction, and Lens-style lookup.
 
 ## 特性概览
 
@@ -105,39 +96,21 @@ google-search/
 
 ---
 
-## 安装
+## Install
 
-### 方式一：直接克隆仓库
-
-```bash
-git clone https://github.com/longlannet/openclaw-skill-google-search.git
-cd openclaw-skill-google-search
-pip install -r requirements.txt
-```
-
-说明：当前 `requirements.txt` 很轻，默认主要安装 `requests`。
-
-### 方式二：放到 OpenClaw 的 skills 目录中
-
-如果你是给 OpenClaw 本地技能系统使用，可以把仓库放到你的 skills 目录，例如：
+直接跑安装脚本就行，它会给这个 skill 建自己的 `.venv`，装好 `requirements.txt`，然后顺手跑一遍 `selfcheck`：
 
 ```bash
-cd ~/.openclaw/workspace/skills
-git clone https://github.com/longlannet/openclaw-skill-google-search.git google-search
-cd google-search
-pip install -r requirements.txt
+bash scripts/install.sh
 ```
 
-说明：如果你的环境里已经有 `requests`，这一步通常会很快。
+前提是你已经准备好了运行时配置：
 
-如果你已经有目录，也可以直接把本仓库内容复制进去，只要保留下面这些结构即可：
+```bash
+cp config/serper.env.example config/serper.env
+```
 
-- `SKILL.md`
-- `scripts/`
-- `references/`
-- `config/serper.env.example`
-- `.gitignore`
-- `requirements.txt`
+然后把你的 Serper API key 写进 `config/serper.env`。
 
 ---
 

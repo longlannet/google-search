@@ -16,3 +16,8 @@ venv/
 
 # Test cache
 .pytest_cache/
+
+# Local editor / OS files
+.DS_Store
+.vscode/
+.idea/

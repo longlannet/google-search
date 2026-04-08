@@ -16,22 +16,30 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: Install dependencies
+      - name: Prepare local venv and config
         run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
-          pip install pytest
+          python -m venv .venv
+          .venv/bin/python -m pip install --upgrade pip
+          .venv/bin/pip install -r requirements.txt
+          .venv/bin/pip install pytest
+          cp config/serper.env.example config/serper.env
 
       - name: Verify required files exist
         run: |
           test -f SKILL.md
           test -f README.md
           test -f scripts/search.py
+          test -f scripts/check.sh
+          test -f scripts/install.sh
 
       - name: Check Python syntax
         run: |
-          python -m py_compile scripts/*.py
+          .venv/bin/python -m py_compile scripts/*.py
 
       - name: Run lightweight tests
         run: |
-          pytest -q tests/test_args.py tests/test_workflows.py
+          .venv/bin/pytest -q tests/test_args.py tests/test_workflows.py
+
+      - name: Run lightweight skill check
+        run: |
+          RUN_SMOKE=0 bash scripts/check.sh
