@@ -5,9 +5,9 @@
 [![Python](https://img.shields.io/badge/python-3.x-blue)](https://www.python.org/)
 [![OpenClaw Skill](https://img.shields.io/badge/OpenClaw-Skill-7c3aed)](https://github.com/longlannet/google-search)
 
-> Real-time Google search through Serper.dev for OpenClaw.
+> 面向 OpenClaw 的 Serper.dev 实时 Google 搜索 skill。
 
-`google-search` is an OpenClaw skill repository that wraps [Serper.dev](https://serper.dev) into a reusable local workflow for web, news, images, maps, reviews, webpage extraction, and Lens-style lookup.
+`google-search` 是一个项目型 OpenClaw skill 仓库，把 [Serper.dev](https://serper.dev) 封装成可重复使用的本地工作流，支持网页、新闻、图片、地图、评论、网页提取与 Lens 风格反查等能力。
 
 ## 特性概览
 
@@ -92,13 +92,13 @@ google-search/
 
 - Python 3
 - 一个可用的 Serper API key
-- 当前默认 Python 依赖很轻，主要是 `requests`
+- 当前 Python 依赖很轻，核心主要是 `requests`
 
 ---
 
-## Install
+## 安装
 
-直接跑安装脚本就行，它会给这个 skill 建自己的 `.venv`，装好 `requirements.txt`，然后顺手跑一遍 `selfcheck`：
+直接运行安装脚本即可。它会为这个 skill 创建自己的 `.venv`、安装 `requirements.txt`，并顺手跑一遍 `selfcheck`：
 
 ```bash
 bash scripts/install.sh
@@ -119,9 +119,9 @@ cp config/serper.env.example config/serper.env
 1. 安装依赖
 2. 复制配置文件
 3. 写入你的 Serper API key
-4. 运行一条测试命令
+4. 跑一条测试命令
 
-示例：
+例如：
 
 ```bash
 cp config/serper.env.example config/serper.env
@@ -132,7 +132,7 @@ python3 scripts/search.py web "OpenAI"
 
 ## 配置方法
 
-先从示例文件复制本地配置：
+先复制本地配置模板：
 
 ```bash
 cp config/serper.env.example config/serper.env
@@ -144,7 +144,7 @@ cp config/serper.env.example config/serper.env
 SERPER_API_KEY=your_real_key_here
 ```
 
-配置加载器也支持多 key，并会按轮转方式使用。
+配置加载器支持多 key，并会按轮转方式使用。
 
 ---
 
@@ -162,7 +162,7 @@ python3 scripts/search.py web "OpenAI"
 python3 scripts/search.py "OpenAI" 3 1 us en
 ```
 
-更多可复制示例见：[`references/examples.md`](./references/examples.md)
+更多可直接复制的示例见：[`references/examples.md`](./references/examples.md)
 
 ### 网页正文提取
 
@@ -262,150 +262,46 @@ python3 scripts/search.py web "OpenAI" --json --save /tmp/serper.json
 python3 scripts/selfcheck.py
 ```
 
-输出紧凑 JSON：
+运行更完整的联网检查：
 
 ```bash
-python3 scripts/selfcheck.py --compact
+python3 scripts/selfcheck.py --full --compact
 ```
 
-运行完整检查：
+说明：
+
+- 这是联网 smoke / integration check，不是纯单元测试
+- 结果会受网络状态、API 配额、第三方返回结构变化等影响
+
+---
+
+## 校验
 
 ```bash
-python3 scripts/selfcheck.py --full
+bash scripts/check.sh
 ```
 
-基础自检目前覆盖：
+当前 `check.sh` 会做：
 
-- `search`
-- `images`
-- `news`
-- `autocomplete`
-- `maps`
-- `patents`
-- `webpage`
-- `lens`
-- `maps-reviews`
-- `maps-reviews-pick2`
-- `maps-reviews-all`
+- Python 语法检查
+- 本地轻量测试
+- 轻量 skill check
 
-此外，仓库还包含本地轻量测试：
-
-- `tests/test_args.py`
-- `tests/test_workflows.py`
+CI 也会覆盖这条路径。
 
 ---
 
-## OpenClaw 集成步骤
+## 参考文档
 
-如果你要把它作为 OpenClaw 本地 skill 使用，推荐按下面步骤操作：
-
-1. 把仓库放到 OpenClaw 的 skills 目录，例如：
-
-```bash
-cd ~/.openclaw/workspace/skills
-git clone https://github.com/longlannet/openclaw-skill-google-search.git google-search
-```
-
-2. 安装依赖：
-
-```bash
-cd google-search
-pip install -r requirements.txt
-```
-
-3. 复制配置文件并写入真实 API key：
-
-```bash
-cp config/serper.env.example config/serper.env
-```
-
-4. 确认目录中存在这些关键文件：
-
-- `SKILL.md`
-- `scripts/search.py`
-- `references/endpoints.md`
-- `config/serper.env`
-
-5. 让 OpenClaw 重新加载 skills（具体方式取决于你的运行方式；如果当前实例不会自动发现新 skill，可重启一次 OpenClaw）。
-
-这个仓库按 OpenClaw skill 的方式组织：
-
-- `SKILL.md` 用于触发与导航
-- `references/` 保存详细端点说明与示例
-- `scripts/` 保存稳定的执行逻辑
-
-真实 API key 请放到：
-
-```text
-config/serper.env
-```
-
-**不要提交这个文件。**
+- 端点规则：[`references/endpoints.md`](./references/endpoints.md)
+- 命令示例：[`references/examples.md`](./references/examples.md)
+- 变更历史：[`CHANGELOG.md`](./CHANGELOG.md)
 
 ---
 
-## 限制与注意事项
+## 说明
 
-- 默认区域参数目前偏中文环境：`gl=cn`、`hl=zh-cn`；如需更接近英文/国际结果，请显式传入 `--gl us --hl en`
-- `reviews` 不能只传普通文本查询，必须提供 `--place-id`、`--cid` 或 `--fid` 之一
-- `maps-reviews --all` 会对多个地点逐个抓评论，耗时和 credits 消耗都会更高
-- pretty 输出默认不再显示 API key suffix；如需排查 round-robin fallback，可使用环境变量 `SERPER_DEBUG_RR=1`
-- `lens` 返回空结果不一定代表请求失败，有时只是没有匹配项
-- `selfcheck.py` 更接近联网健康检查（smoke test），不是完全离线、可重复的单元测试
-
----
-
-## 安全与仓库卫生
-
-这个仓库默认忽略：
-
-- `config/serper.env`
-- `runtime/`
-- `venv/`
-- Python 缓存文件
-
-这样可以在上传到 GitHub 时避免把真实 API key 和运行产物一起提交。
-
----
-
-## 版本发布
-
-- 版本变更记录见 [CHANGELOG.md](./CHANGELOG.md)
-- 当前发布版本请以 GitHub Releases / release badge 为准
-- GitHub Releases 可用于查看阶段性发布说明
-
----
-
-## 维护说明
-
-当前仓库的脚本结构已基本定型，后续维护更建议优先：
-
-- 增加功能
-- 补充文档
-- 增量补测试
-
-如果未来确实出现明显维护成本问题，再考虑结构调整。
-
-当前推荐结构如下：
-
-```text
-scripts/
-├── args.py
-├── client.py
-├── helptext.py
-├── io_common.py
-├── renderers.py
-├── renderers_json.py
-├── renderers_pretty.py
-├── response_shapes.py
-├── search.py
-├── selfcheck.py
-├── utils.py
-└── workflows.py
-```
-
----
-
-## 许可
-
-本项目使用 [MIT License](./LICENSE) 发布。
+- `config/serper.env` 是本地敏感配置，不应提交。
+- 默认 locale 是 `gl=cn`、`hl=zh-cn`，如果不覆盖，结果会更偏中文区域。
+- `selfcheck.py` 偏重，当前更像联网集成测试，不是最轻量的健康探针。
+- 如果你只想做快速验证，优先跑 `bash scripts/check.sh`。
