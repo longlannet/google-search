@@ -4,6 +4,28 @@
 
 格式参考 Keep a Changelog，版本号建议遵循 Semantic Versioning（语义化版本）。
 
+## [v1.3.0] - 2026-04-10
+
+### Changed
+
+- 将安装脚本调整为优先复用当前 `python3`，仅在运行时依赖不满足时才回退到本地 `.venv`
+- 将安装阶段默认检查收敛为轻量 `smoke_test.py`，不再把重型 full selfcheck 作为安装成功的默认硬门槛
+- 收敛并对齐 `SKILL.md`、`README.md`、`references/examples.md`、`scripts/helptext.py` 等文档与帮助入口，使其与当前 CLI 行为一致
+
+### Added
+
+- 新增 `scripts/smoke_test.py`，用于最小可用链路验证
+- 为 `scripts/install.sh` 新增 `--system`、`--venv`、`--json`、`--save-json <file>`、`--quiet` 等自动化友好能力
+- 为 `scripts/install.sh` 新增分类退出码与结构化 JSON 结果字段（含 result path / exit kind / exit code）
+- 为 `scripts/selfcheck.py` 新增 `--basic`、`--group network|parsing|workflows`、`--save <file>`、`--fail-fast`、`--quiet` / `--no-stdout`
+- 为 `scripts/selfcheck.py` 新增分类退出码与结果中的 `failureKinds` / `exitCode` 等字段
+- 新增 `references/automation.md`，集中说明 CI / 自动化接入方式
+
+### Fixed
+
+- 修复安装脚本在 JSON 输出路径下的残留输出与帮助细节问题
+- 收平 examples / README / helptext 中遗留的旧版 `.venv` / selfcheck 用法，减少文档误导
+
 ## [v1.2.0] - 2026-03-10
 
 ### Changed

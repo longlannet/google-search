@@ -14,9 +14,10 @@
 - 支持网页、新闻、图片、视频、购物、学术、专利、地点、地图、评论、网页提取、Lens 反查等能力
 - 支持 pretty / json / raw / compact 输出
 - 支持 `maps-reviews` 地图到评论工作流
-- 提供 `selfcheck.py` 自检脚本
+- 提供 `smoke_test.py` 轻量健康检查与 `selfcheck.py` 分组自检
 - 提供轻量本地测试与最小 GitHub Actions 校验
 - 提供适合 agent 按需读取的参考文档
+- 提供面向自动化/CI 的 JSON 输出、保存文件、静默模式与分类退出码
 - 提供中文 README、安装说明和 changelog
 
 ## 支持的能力
@@ -66,6 +67,7 @@ google-search/
 ├── config/
 │   └── serper.env.example
 ├── references/
+│   ├── automation.md
 │   ├── endpoints.md
 │   └── examples.md
 ├── tests/
@@ -98,10 +100,17 @@ google-search/
 
 ## 安装
 
-直接运行安装脚本即可。它会为这个 skill 创建自己的 `.venv`、安装 `requirements.txt`，并顺手跑一遍 `selfcheck`：
+直接运行安装脚本即可。默认逻辑是：
+
+- 当前 `python3` 已满足运行时依赖 → 直接复用
+- 当前 `python3` 不满足 → 回退到本地 `.venv`
+- 安装阶段默认跑轻量 `smoke_test.py`
+- 如需更完整检查，可显式启用 full selfcheck
 
 ```bash
 bash scripts/install.sh
+bash scripts/install.sh --venv
+bash scripts/install.sh --save-json /tmp/google-search-install.json --quiet
 ```
 
 前提是你已经准备好了运行时配置：
@@ -116,15 +125,16 @@ cp config/serper.env.example config/serper.env
 
 ## 快速开始
 
-1. 安装依赖
-2. 复制配置文件
-3. 写入你的 Serper API key
+1. 复制配置文件
+2. 写入你的 Serper API key
+3. 运行安装脚本
 4. 跑一条测试命令
 
 例如：
 
 ```bash
 cp config/serper.env.example config/serper.env
+bash scripts/install.sh
 python3 scripts/search.py web "OpenAI"
 ```
 
@@ -254,15 +264,23 @@ python3 scripts/search.py web "OpenAI" --json --save /tmp/serper.json
 
 ---
 
-## 自检
+## 健康检查与自检
 
-运行基础健康检查：
+最轻量的健康检查：
 
 ```bash
-python3 scripts/selfcheck.py
+python3 scripts/smoke_test.py
 ```
 
-运行更完整的联网检查：
+基础分组自检：
+
+```bash
+python3 scripts/selfcheck.py --basic
+python3 scripts/selfcheck.py --group network
+python3 scripts/selfcheck.py --group parsing --save /tmp/google-search-parsing.json --quiet
+```
+
+更完整的联网检查：
 
 ```bash
 python3 scripts/selfcheck.py --full --compact
@@ -270,8 +288,11 @@ python3 scripts/selfcheck.py --full --compact
 
 说明：
 
-- 这是联网 smoke / integration check，不是纯单元测试
+- `smoke_test.py` 只验证最小可用链路
+- `selfcheck.py` 是联网 smoke / integration check，不是纯单元测试
+- `selfcheck.py` 支持 `--group`、`--save`、`--fail-fast`、`--quiet`
 - 结果会受网络状态、API 配额、第三方返回结构变化等影响
+- 自检退出码支持按类别区分 config / network / parsing / workflow / mixed failure
 
 ---
 
@@ -293,6 +314,7 @@ CI 也会覆盖这条路径。
 
 ## 参考文档
 
+- 自动化/CI：[`references/automation.md`](./references/automation.md)
 - 端点规则：[`references/endpoints.md`](./references/endpoints.md)
 - 命令示例：[`references/examples.md`](./references/examples.md)
 - 变更历史：[`CHANGELOG.md`](./CHANGELOG.md)
@@ -303,5 +325,5 @@ CI 也会覆盖这条路径。
 
 - `config/serper.env` 是本地敏感配置，不应提交。
 - 默认 locale 是 `gl=cn`、`hl=zh-cn`，如果不覆盖，结果会更偏中文区域。
-- `selfcheck.py` 偏重，当前更像联网集成测试，不是最轻量的健康探针。
-- 如果你只想做快速验证，优先跑 `bash scripts/check.sh`。
+- `smoke_test.py` 是最轻量的健康探针；`selfcheck.py` 偏重，更像联网集成测试。
+- 如果你只想做快速验证，优先跑 `python3 scripts/smoke_test.py` 或 `bash scripts/check.sh`。
