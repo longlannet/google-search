@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """兼容导出层。新代码应优先直接从真实模块导入。"""
 
 from args import ENDPOINTS, UsageError, get_usage, parse_args

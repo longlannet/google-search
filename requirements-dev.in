@@ -1,0 +1,4 @@
+-r requirements.in
+
+# Test dependencies. Python 3.10 or newer is required.
+pytest==9.1.1

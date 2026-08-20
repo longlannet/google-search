@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 from io_common import safe_print
 from renderers_pretty import (
     print_answer_box,

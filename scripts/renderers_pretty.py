@@ -1,8 +1,21 @@
-#!/usr/bin/env python3
-from io_common import safe_print
+from io_common import safe_print, sanitize_external_data
+
+
+def _as_item(value, fallback_key='title'):
+    if isinstance(value, dict):
+        return value
+    return {fallback_key: str(value)}
+
+
+def _bounded_items(value, limit):
+    if not isinstance(value, (list, tuple)):
+        return []
+    return value[:limit]
 
 
 def _first_present(item, *keys, default=None):
+    if not isinstance(item, dict):
+        return default
     for key in keys:
         value = item.get(key)
         if value is not None:
@@ -24,7 +37,7 @@ def _join_meta(*values):
 
 
 def print_knowledge_graph(kg):
-    if not kg:
+    if not isinstance(kg, dict) or not kg:
         return
     safe_print('\n🧠 知识卡片:')
     title = kg.get('title')
@@ -50,7 +63,7 @@ def print_knowledge_graph(kg):
 
 
 def print_answer_box(answer_box):
-    if not answer_box:
+    if not isinstance(answer_box, dict) or not answer_box:
         return
     safe_print('\n📦 直达答案:')
     for field in ['title', 'answer', 'snippet']:
@@ -65,13 +78,14 @@ def print_answer_box(answer_box):
 
 
 def print_organic_results(organic, title='自然搜索结果', limit=None):
-    if not organic:
+    if not isinstance(organic, (list, tuple)) or not organic:
         safe_print('❌ 未找到结果。')
         return
     rows = organic[:limit] if limit else organic
     safe_print(f'\n✅ {title}: {len(rows)} 条')
     safe_print('-' * 30)
     for i, res in enumerate(rows, start=1):
+        res = _as_item(res)
         title_text = res.get('title', '无标题')
         link = res.get('link', '#')
         snippet = res.get('snippet', '')
@@ -85,10 +99,11 @@ def print_organic_results(organic, title='自然搜索结果', limit=None):
 
 
 def print_people_also_ask(items, limit=3):
-    if not items:
+    if not isinstance(items, (list, tuple)) or not items:
         return
     safe_print('🤔 相关追问:')
     for i, item in enumerate(items[:limit], start=1):
+        item = _as_item(item, fallback_key='question')
         question = item.get('question') or '无问题文本'
         snippet = item.get('snippet') or ''
         link = item.get('link') or ''
@@ -101,7 +116,7 @@ def print_people_also_ask(items, limit=3):
 
 
 def print_related_searches(items, limit=5):
-    if not items:
+    if not isinstance(items, (list, tuple)) or not items:
         return
     safe_print('🔎 相关搜索:')
     for i, item in enumerate(items[:limit], start=1):
@@ -111,10 +126,11 @@ def print_related_searches(items, limit=5):
 
 
 def print_news(items, limit=5):
-    if not items:
+    if not isinstance(items, (list, tuple)) or not items:
         return
     safe_print('📰 新闻结果:')
     for i, item in enumerate(items[:limit], start=1):
+        item = _as_item(item)
         title = item.get('title', '无标题')
         link = item.get('link', '#')
         snippet = item.get('snippet') or ''
@@ -131,10 +147,11 @@ def print_news(items, limit=5):
 
 
 def print_images(items, limit=5):
-    if not items:
+    if not isinstance(items, (list, tuple)) or not items:
         return
     safe_print('🖼️ 图片结果:')
     for i, item in enumerate(items[:limit], start=1):
+        item = _as_item(item)
         title = item.get('title', '无标题')
         link = item.get('link') or item.get('imageUrl') or '#'
         source = _first_present(item, 'source', 'domain')
@@ -146,10 +163,11 @@ def print_images(items, limit=5):
 
 
 def print_videos(items, limit=5):
-    if not items:
+    if not isinstance(items, (list, tuple)) or not items:
         return
     safe_print('🎬 视频结果:')
     for i, item in enumerate(items[:limit], start=1):
+        item = _as_item(item)
         title = item.get('title', '无标题')
         link = item.get('link', '#')
         snippet = item.get('snippet') or ''
@@ -166,10 +184,11 @@ def print_videos(items, limit=5):
 
 
 def print_shopping(items, limit=5):
-    if not items:
+    if not isinstance(items, (list, tuple)) or not items:
         return
     safe_print('🛒 购物结果:')
     for i, item in enumerate(items[:limit], start=1):
+        item = _as_item(item)
         title = item.get('title', '无标题')
         link = item.get('link', '#')
         price = item.get('price')
@@ -184,10 +203,11 @@ def print_shopping(items, limit=5):
 
 
 def print_places(items, limit=5, title='地点结果', show_ids=True):
-    if not items:
+    if not isinstance(items, (list, tuple)) or not items:
         return
     safe_print(f'📍 {title}:')
     for i, item in enumerate(items[:limit], start=1):
+        item = _as_item(item)
         title_text = item.get('title') or item.get('name') or '无标题'
         address = _first_present(item, 'address', default='')
         phone = _first_present(item, 'phoneNumber', 'phone', default='')
@@ -199,9 +219,9 @@ def print_places(items, limit=5, title='地点结果', show_ids=True):
         link = _first_present(item, 'link', 'website', default='#')
         extras = []
         if address:
-            extras.append(address)
+            extras.append(str(address))
         if phone:
-            extras.append(phone)
+            extras.append(str(phone))
         if rating is not None:
             rating_text = f'评分 {rating}'
             if rating_count is not None and rating_count != '':
@@ -222,10 +242,11 @@ def print_places(items, limit=5, title='地点结果', show_ids=True):
 
 
 def print_reviews(items, limit=5):
-    if not items:
+    if not isinstance(items, (list, tuple)) or not items:
         return
     safe_print('⭐ 评论结果:')
     for i, item in enumerate(items[:limit], start=1):
+        item = _as_item(item, fallback_key='text')
         author = _first_present(item, 'author', 'user', 'name', 'title', default='匿名用户')
         if isinstance(author, dict):
             author = author.get('name') or author.get('title') or author.get('user') or str(author)
@@ -251,17 +272,17 @@ def print_reviews(items, limit=5):
         if meta_bits:
             safe_print(f"   🏷️ {' · '.join(meta_bits)}")
         if text:
-            text = text.strip()
+            text = str(text).strip()
             if len(text) > 300:
                 text = text[:300].rstrip() + '…'
             safe_print(f'   📝 {text}')
-        if photos:
+        if isinstance(photos, (list, tuple)) and photos:
             safe_print(f'   🖼️ 附图: {len(photos)}')
     safe_print('-' * 30)
 
 
 def print_autocomplete(items, limit=10):
-    if not items:
+    if not isinstance(items, (list, tuple)) or not items:
         return
     safe_print('⌨️ 自动补全:')
     for i, item in enumerate(items[:limit], start=1):
@@ -274,8 +295,10 @@ def print_autocomplete(items, limit=10):
 
 
 def print_webpage(data, summary_chars=800):
-    text = (data.get('text') or '').strip()
-    title = (data.get('title') or '').strip()
+    if not isinstance(data, dict):
+        data = {}
+    text = str(data.get('text') or '').strip()
+    title = str(data.get('title') or '').strip()
     if not text:
         safe_print('❌ 未提取到网页正文。')
         return
@@ -297,18 +320,21 @@ def print_webpage(data, summary_chars=800):
 
 
 def print_lens_results(data, limit=10):
+    if not isinstance(data, dict):
+        data = {}
     candidates = (
         data.get('organic', [])
         or data.get('visualMatches', [])
         or data.get('similarImages', [])
         or data.get('images', [])
     )
-    if not candidates:
+    if not isinstance(candidates, (list, tuple)) or not candidates:
         safe_print('🔎 图片识别结果: 未找到匹配项。')
         return
 
     safe_print('🔎 图片识别匹配结果:')
     for i, item in enumerate(candidates[:limit], start=1):
+        item = _as_item(item)
         title = item.get('title', '无标题')
         link = item.get('link') or item.get('imageUrl') or '#'
         snippet = item.get('snippet') or ''
@@ -338,6 +364,8 @@ def print_pagination(pagination):
 
 
 def print_credits(data):
+    if not isinstance(data, dict):
+        return
     credits = data.get('credits')
     if credits is None:
         return
@@ -346,6 +374,8 @@ def print_credits(data):
 
 
 def print_search_parameters(data):
+    if not isinstance(data, dict):
+        return
     params = data.get('searchParameters')
     if not params or not isinstance(params, dict):
         return
@@ -360,6 +390,12 @@ def print_search_parameters(data):
 
 
 def render_results(endpoint, data, limit=10):
+    data = sanitize_external_data(data)
+    if not isinstance(data, dict):
+        data = {}
+    if not isinstance(limit, int) or isinstance(limit, bool):
+        limit = 10
+    limit = max(1, min(limit, 100))
     endpoint_titles = {
         'search': '自然搜索结果',
         'images': '图片结果',

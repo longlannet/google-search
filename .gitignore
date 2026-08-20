@@ -1,21 +1,59 @@
 # Sensitive config
 config/serper.env
+.env
+.env.*
+*.key
+*.pem
+*.p12
+*.pfx
+id_dsa
+id_ecdsa
+id_ed25519
+id_rsa
+.netrc
+.npmrc
+.pypirc
+credentials.json
+secrets.json
+secrets.yml
+secrets.yaml
+service-account.json
 
-# Runtime state
+# Runtime state and generated output
 runtime/
+output/
+.venv.install.lock
 
 # Python cache
 __pycache__/
 scripts/__pycache__/
-*.pyc
+*.py[cod]
 
 # Local virtualenv
 venv/
 .venv/
 .venv-test/
+.venv-build.*/
+.venv-bootstrap.*/
+.venv-stage.*/
 
 # Test cache
 .pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.hypothesis/
+.tox/
+.nox/
+.cache/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+
+# Build artifacts
+build/
+dist/
+*.egg-info/
 
 # Local editor / OS files
 .DS_Store

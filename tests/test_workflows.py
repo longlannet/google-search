@@ -29,19 +29,18 @@ def test_run_maps_reviews_success():
     }
     reviews_payload = {'reviews': [{'author': 'Alice', 'text': 'Nice'}]}
 
-    with patch('workflows.do_request', side_effect=[(maps_payload, 'keymaps'), (reviews_payload, 'keyrevs')]):
+    with patch('workflows.do_request', side_effect=[(maps_payload, 1), (reviews_payload, 2)]):
         result = run_maps_reviews('coffee shanghai', pick=1)
 
     assert result['ok'] is True
     assert result['selectedPlace']['placeId'] == 'pid-a'
-    assert result['usedKeySuffixes']['maps'] == 'maps'
-    assert result['usedKeySuffixes']['reviews'] == 'revs'
+    assert result['usedKeySlots'] == {'maps': 1, 'reviews': 2}
 
 
 def test_run_maps_reviews_pick_out_of_range():
     maps_payload = {'places': [{'title': 'Cafe A', 'placeId': 'pid-a'}]}
 
-    with patch('workflows.do_request', return_value=(maps_payload, 'keymaps')):
+    with patch('workflows.do_request', return_value=(maps_payload, 1)):
         result = run_maps_reviews('coffee shanghai', pick=3)
 
     assert result['ok'] is False
@@ -51,7 +50,7 @@ def test_run_maps_reviews_pick_out_of_range():
 def test_run_maps_reviews_no_places_found():
     maps_payload = {'places': []}
 
-    with patch('workflows.do_request', return_value=(maps_payload, 'keymaps')):
+    with patch('workflows.do_request', return_value=(maps_payload, 1)):
         result = run_maps_reviews('coffee shanghai', pick=1)
 
     assert result['ok'] is False
@@ -62,7 +61,7 @@ def test_run_maps_reviews_no_places_found():
 def test_run_maps_reviews_all_no_places_found():
     maps_payload = {'places': []}
 
-    with patch('workflows.do_request', return_value=(maps_payload, 'keymaps')):
+    with patch('workflows.do_request', return_value=(maps_payload, 1)):
         result = run_maps_reviews_all('coffee shanghai')
 
     assert result['ok'] is False
@@ -84,22 +83,22 @@ def test_run_maps_reviews_all_partial_failure_has_structured_error_fields():
     with patch(
         'workflows.do_request',
         side_effect=[
-            (maps_payload, 'keymaps'),
-            (reviews_payload, 'keyrevs'),
+            (maps_payload, 1),
+            (reviews_payload, 2),
             DummyError('boom'),
         ],
     ):
         result = run_maps_reviews_all('coffee shanghai')
 
-    assert result['ok'] is True
+    assert result['ok'] is False
     assert result['allSucceeded'] is False
     assert result['failedCount'] == 1
     assert len(result['results']) == 2
     failed_entry = result['results'][1]
     assert failed_entry['ok'] is False
     assert failed_entry['errorType'] == 'DummyError'
-    assert failed_entry['errorMessage'] == 'boom'
-    assert 'DummyError: boom' == failed_entry['error']
+    assert failed_entry['errorMessage'] == 'Unexpected workflow error'
+    assert 'DummyError: Unexpected workflow error' == failed_entry['error']
 
 
 def test_run_maps_reviews_all_all_success():
@@ -115,9 +114,9 @@ def test_run_maps_reviews_all_all_success():
     with patch(
         'workflows.do_request',
         side_effect=[
-            (maps_payload, 'keymaps'),
-            (reviews_payload_a, 'keya1234'),
-            (reviews_payload_b, 'keyb5678'),
+            (maps_payload, 1),
+            (reviews_payload_a, 2),
+            (reviews_payload_b, 1),
         ],
     ):
         result = run_maps_reviews_all('coffee shanghai')
@@ -127,8 +126,7 @@ def test_run_maps_reviews_all_all_success():
     assert result['failedCount'] == 0
     assert len(result['results']) == 2
     assert all(entry['ok'] is True for entry in result['results'])
-    assert result['usedKeySuffixes']['maps'] == 'maps'
-    assert result['usedKeySuffixes']['reviews'] == ['1234', '5678']
+    assert result['usedKeySlots'] == {'maps': 1, 'reviews': [2, 1]}
 
 
 def test_run_maps_reviews_supports_cid_only_place_identifier():
@@ -142,14 +140,14 @@ def test_run_maps_reviews_supports_cid_only_place_identifier():
     }
     reviews_payload = {'reviews': [{'author': 'Alice'}]}
 
-    with patch('workflows.do_request', side_effect=[(maps_payload, 'keymaps'), (reviews_payload, 'keyrevs')]) as mocked:
+    with patch('workflows.do_request', side_effect=[(maps_payload, 1), (reviews_payload, 2)]) as mocked:
         result = run_maps_reviews('coffee shanghai', pick=1)
 
     assert result['ok'] is True
     _, kwargs = mocked.call_args_list[1]
-    assert kwargs['place_id'] is None
+    assert kwargs.get('place_id') is None
     assert kwargs['cid'] == 'cid-only'
-    assert kwargs['fid'] is None
+    assert kwargs.get('fid') is None
     assert result['selectedPlace']['cid'] == 'cid-only'
 
 
@@ -164,13 +162,13 @@ def test_run_maps_reviews_supports_fid_only_place_identifier():
     }
     reviews_payload = {'reviews': [{'author': 'Alice'}]}
 
-    with patch('workflows.do_request', side_effect=[(maps_payload, 'keymaps'), (reviews_payload, 'keyrevs')]) as mocked:
+    with patch('workflows.do_request', side_effect=[(maps_payload, 1), (reviews_payload, 2)]) as mocked:
         result = run_maps_reviews('coffee shanghai', pick=1)
 
     assert result['ok'] is True
     _, kwargs = mocked.call_args_list[1]
-    assert kwargs['place_id'] is None
-    assert kwargs['cid'] is None
+    assert kwargs.get('place_id') is None
+    assert kwargs.get('cid') is None
     assert kwargs['fid'] == 'fid-only'
     assert result['selectedPlace']['fid'] == 'fid-only'
 
@@ -188,7 +186,7 @@ def test_render_maps_reviews_pretty_accepts_organic_reviews(capsys):
                 {'author': 'Alice', 'text': 'Nice place'}
             ]
         },
-        'usedKeySuffixes': {'maps': 'maps', 'reviews': 'revs'},
+        'usedKeySlots': {'maps': 1, 'reviews': 2},
     }
 
     render_maps_reviews_pretty(result, pick=1, gl='cn', hl='zh-cn', limit=5)
@@ -204,3 +202,40 @@ def test_rr_debug_flag_parser(monkeypatch):
     assert _rr_debug_enabled() is False
     monkeypatch.setenv('SERPER_DEBUG_RR', '1')
     assert _rr_debug_enabled() is True
+
+
+def test_workflow_uses_original_query_not_untrusted_place_title():
+    maps_payload = {'places': [{'title': 'x' * 10000, 'placeId': 'pid-a'}]}
+    reviews_payload = {'reviews': []}
+    with patch('workflows.do_request', side_effect=[(maps_payload, 1), (reviews_payload, 2)]) as mocked:
+        result = run_maps_reviews('original query')
+    assert result['ok'] is True
+    assert mocked.call_args_list[1].kwargs['query'] == 'original query'
+
+
+def test_all_slices_places_to_local_num_limit():
+    maps_payload = {'places': [
+        {'title': f'Cafe {index}', 'placeId': f'pid-{index}'} for index in range(12)
+    ]}
+    side_effect = [(maps_payload, 1)] + [({'reviews': []}, 2) for _ in range(3)]
+    with patch('workflows.do_request', side_effect=side_effect) as mocked:
+        result = run_maps_reviews_all('coffee', num=3)
+    assert result['ok'] is True
+    assert result['consideredPlaceCount'] == 3
+    assert result['mapsPlaceCount'] == 12
+    assert result['truncatedCount'] == 9
+    assert mocked.call_count == 4
+
+
+def test_all_stops_at_first_review_failure_and_skips_remaining():
+    maps_payload = {'places': [
+        {'title': f'Cafe {index}', 'placeId': f'pid-{index}'} for index in range(4)
+    ]}
+    with patch('workflows.do_request', side_effect=[(maps_payload, 1), ({'reviews': []}, 2), DummyError('stop')]) as mocked:
+        result = run_maps_reviews_all('coffee', num=4)
+    assert result['ok'] is False
+    assert result['allSucceeded'] is False
+    assert result['failedCount'] == 1
+    assert result['attemptedCount'] == 2
+    assert result['skippedCount'] == 2
+    assert mocked.call_count == 3

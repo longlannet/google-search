@@ -1,8 +1,12 @@
-#!/usr/bin/env python3
-from client import do_request
-from io_common import safe_print
+from args import MAX_MAPS_ALL_PLACES
+from client import SerperAPIError, do_request
+from io_common import safe_print, sanitize_external_data, sanitize_external_text
 from renderers import print_places, print_reviews
 from renderers_json import save_output, serialize_json
+
+
+class WorkflowValidationError(ValueError):
+    pass
 
 
 def _select_place_payload(chosen):
@@ -18,55 +22,81 @@ def _select_place_payload(chosen):
     }
 
 
+def _review_identifier_kwargs(chosen):
+    for source_name, target_name in (('placeId', 'place_id'), ('cid', 'cid'), ('fid', 'fid')):
+        value = chosen.get(source_name)
+        if value:
+            return {target_name: value}
+    return {}
+
+
+def _places_from_maps(maps_data):
+    if not isinstance(maps_data, dict):
+        return []
+    candidates = maps_data.get('places')
+    if not isinstance(candidates, list):
+        return []
+    return [item for item in candidates if isinstance(item, dict)]
+
+
 def _workflow_error_payload(error):
+    error_type = type(error).__name__
+    if getattr(error, 'kind', None):
+        error_type = f'{error_type}:{error.kind}'
+    if isinstance(error, (SerperAPIError, WorkflowValidationError)):
+        message = sanitize_external_text(str(error), max_chars=500)
+    else:
+        message = 'Unexpected workflow error'
     return {
-        'errorType': type(error).__name__,
-        'errorMessage': str(error),
-        'error': f'{type(error).__name__}: {error}',
+        'errorType': error_type,
+        'errorMessage': message,
+        'error': f'{error_type}: {message}',
     }
 
 
-def run_maps_reviews(query, num=5, page=1, gl='cn', hl='zh-cn', pick=1):
-    maps_data, maps_key = do_request('maps', query, num, page, gl, hl)
-    places = maps_data.get('places', [])
-    if not places:
-        return {
-            'ok': False,
-            'query': query,
-            'pick': pick,
-            'maps': maps_data,
-            'selectedPlace': None,
-            'reviews': None,
-            'error': 'No places found from maps query',
-            'usedKeySuffixes': {'maps': maps_key[-4:]},
-        }
+def _base_failure(query, maps_data, maps_slot, error, **extra):
+    payload = {
+        'ok': False,
+        'query': query,
+        'maps': maps_data,
+        'error': error,
+        'usedKeySlots': {'maps': maps_slot},
+    }
+    payload.update(extra)
+    return payload
 
-    index = max(1, pick) - 1
-    if index >= len(places):
-        return {
-            'ok': False,
-            'query': query,
-            'pick': pick,
-            'maps': maps_data,
-            'selectedPlace': None,
-            'reviews': None,
-            'error': f'Pick {pick} out of range; only {len(places)} places found',
-            'usedKeySuffixes': {'maps': maps_key[-4:]},
-        }
+
+def run_maps_reviews(query, num=5, page=1, gl='cn', hl='zh-cn', pick=1):
+    maps_data, maps_slot = do_request('maps', query, num, page, gl, hl)
+    all_places = _places_from_maps(maps_data)
+    places = all_places[:num]
+    if not places:
+        return _base_failure(
+            query, maps_data, maps_slot, 'No places found from maps query',
+            pick=pick, selectedPlace=None, reviews=None,
+            mapsPlaceCount=len(all_places), consideredPlaceCount=len(places),
+        )
+    index = pick - 1
+    if index < 0 or index >= len(places):
+        return _base_failure(
+            query, maps_data, maps_slot,
+            f'Pick {pick} out of range; only {len(places)} places found',
+            pick=pick, selectedPlace=None, reviews=None,
+            mapsPlaceCount=len(all_places), consideredPlaceCount=len(places),
+        )
 
     chosen = places[index]
-    reviews_data, reviews_key = do_request(
-        'reviews',
-        query=chosen.get('title') or query,
-        num=num,
-        page=page,
-        gl=gl,
-        hl=hl,
-        place_id=chosen.get('placeId'),
-        cid=chosen.get('cid'),
-        fid=chosen.get('fid'),
+    identifier_kwargs = _review_identifier_kwargs(chosen)
+    if not identifier_kwargs:
+        return _base_failure(
+            query, maps_data, maps_slot, 'Selected place has no supported review identifier',
+            pick=pick, selectedPlace=_select_place_payload(chosen), reviews=None,
+            mapsPlaceCount=len(all_places), consideredPlaceCount=len(places),
+        )
+    reviews_data, reviews_slot = do_request(
+        'reviews', query=query, num=num, page=page, gl=gl, hl=hl,
+        **identifier_kwargs,
     )
-
     return {
         'ok': True,
         'query': query,
@@ -74,144 +104,157 @@ def run_maps_reviews(query, num=5, page=1, gl='cn', hl='zh-cn', pick=1):
         'maps': maps_data,
         'selectedPlace': _select_place_payload(chosen),
         'reviews': reviews_data,
-        'usedKeySuffixes': {'maps': maps_key[-4:], 'reviews': reviews_key[-4:]},
+        'mapsPlaceCount': len(all_places),
+        'consideredPlaceCount': len(places),
+        'truncatedCount': len(all_places) - len(places),
+        'usedKeySlots': {'maps': maps_slot, 'reviews': reviews_slot},
     }
 
 
 def run_maps_reviews_all(query, num=5, page=1, gl='cn', hl='zh-cn'):
-    # 注意：这里的 ok 表示工作流主流程已跑通；是否全部地点都成功请看 allSucceeded / failedCount。
-    maps_data, maps_key = do_request('maps', query, num, page, gl, hl)
-    places = maps_data.get('places', [])
+    if not isinstance(num, int) or isinstance(num, bool) or not 1 <= num <= MAX_MAPS_ALL_PLACES:
+        raise ValueError(f'num must be between 1 and {MAX_MAPS_ALL_PLACES} for maps-reviews --all')
+    maps_data, maps_slot = do_request('maps', query, num, page, gl, hl)
+    all_places = _places_from_maps(maps_data)
+    places = all_places[:num]
     if not places:
-        return {
-            'ok': False,
-            'allSucceeded': False,
-            'failedCount': 0,
-            'query': query,
-            'maps': maps_data,
-            'results': [],
-            'error': 'No places found from maps query',
-            'usedKeySuffixes': {'maps': maps_key[-4:]},
-        }
+        return _base_failure(
+            query, maps_data, maps_slot, 'No places found from maps query',
+            allSucceeded=False, failedCount=0, attemptedCount=0, skippedCount=0, results=[],
+            mapsPlaceCount=len(all_places), consideredPlaceCount=0, truncatedCount=0,
+        )
 
     results = []
-    used_review_keys = []
-    failed_count = 0
-    for idx, chosen in enumerate(places, start=1):
+    review_slots = []
+    for index, chosen in enumerate(places, start=1):
         try:
-            reviews_data, reviews_key = do_request(
-                'reviews',
-                query=chosen.get('title') or query,
-                num=num,
-                page=page,
-                gl=gl,
-                hl=hl,
-                place_id=chosen.get('placeId'),
-                cid=chosen.get('cid'),
-                fid=chosen.get('fid'),
+            identifier_kwargs = _review_identifier_kwargs(chosen)
+            if not identifier_kwargs:
+                raise WorkflowValidationError('Selected place has no supported review identifier')
+            reviews_data, reviews_slot = do_request(
+                'reviews', query=query, num=num, page=page, gl=gl, hl=hl,
+                **identifier_kwargs,
             )
-            used_review_keys.append(reviews_key[-4:])
+            review_slots.append(reviews_slot)
             results.append({
                 'ok': True,
-                'pick': idx,
+                'pick': index,
                 'selectedPlace': _select_place_payload(chosen),
                 'reviews': reviews_data,
             })
-        except Exception as e:
-            failed_count += 1
+        except Exception as error:
             results.append({
                 'ok': False,
-                'pick': idx,
+                'pick': index,
                 'selectedPlace': _select_place_payload(chosen),
                 'reviews': None,
-                **_workflow_error_payload(e),
+                **_workflow_error_payload(error),
             })
+            return {
+                'ok': False,
+                'allSucceeded': False,
+                'failedCount': 1,
+                'attemptedCount': len(results),
+                'skippedCount': len(places) - index,
+                'query': query,
+                'maps': maps_data,
+                'results': results,
+                'error': f'Review retrieval stopped at place {index}',
+                'mapsPlaceCount': len(all_places),
+                'consideredPlaceCount': len(places),
+                'truncatedCount': len(all_places) - len(places),
+                'usedKeySlots': {'maps': maps_slot, 'reviews': review_slots},
+            }
 
-    all_succeeded = failed_count == 0
     return {
         'ok': True,
-        'allSucceeded': all_succeeded,
-        'failedCount': failed_count,
+        'allSucceeded': True,
+        'failedCount': 0,
+        'attemptedCount': len(results),
+        'skippedCount': 0,
         'query': query,
         'maps': maps_data,
         'results': results,
-        'usedKeySuffixes': {'maps': maps_key[-4:], 'reviews': used_review_keys},
+        'mapsPlaceCount': len(all_places),
+        'consideredPlaceCount': len(places),
+        'truncatedCount': len(all_places) - len(places),
+        'usedKeySlots': {'maps': maps_slot, 'reviews': review_slots},
     }
 
 
-def emit_maps_reviews_json(result, compact=False, save_path=None):
-    text = serialize_json(result, compact=compact)
-    if save_path:
+def _emit_payload(payload, compact=False, save_path=None):
+    text = serialize_json(sanitize_external_data(payload), compact=compact)
+    if save_path is not None:
         save_output(text, save_path)
     safe_print(text)
+
+
+def emit_maps_reviews_json(result, compact=False, save_path=None):
+    _emit_payload({'trust': 'untrusted_external_content', **result}, compact, save_path)
 
 
 def emit_maps_reviews_raw(result, compact=False, save_path=None):
     raw_payload = {
+        'ok': result.get('ok', False),
         'maps': result.get('maps'),
         'reviews': result.get('reviews'),
+        'error': result.get('error'),
     }
-    text = serialize_json(raw_payload, compact=compact)
-    if save_path:
-        save_output(text, save_path)
-    safe_print(text)
+    _emit_payload(raw_payload, compact, save_path)
 
 
 def emit_maps_reviews_all_json(result, compact=False, save_path=None):
-    # result.ok=True 表示 workflow 运行成功；若部分地点失败，请结合 allSucceeded / failedCount 判断。
-    text = serialize_json(result, compact=compact)
-    if save_path:
-        save_output(text, save_path)
-    safe_print(text)
+    _emit_payload({'trust': 'untrusted_external_content', **result}, compact, save_path)
 
 
 def emit_maps_reviews_all_raw(result, compact=False, save_path=None):
     raw_payload = {
+        'ok': result.get('ok', False),
+        'allSucceeded': result.get('allSucceeded', False),
+        'failedCount': result.get('failedCount', 0),
         'maps': result.get('maps'),
         'results': result.get('results'),
+        'error': result.get('error'),
     }
-    text = serialize_json(raw_payload, compact=compact)
-    if save_path:
-        save_output(text, save_path)
-    safe_print(text)
+    _emit_payload(raw_payload, compact, save_path)
 
 
 def render_maps_reviews_pretty(result, pick, gl, hl, limit=10):
+    result = sanitize_external_data(result)
     query = result.get('query', '')
-    safe_print(f'🔍 Google (Serper) maps → reviews 联动: {query}...')
+    safe_print(f'Google (Serper) maps -> reviews: {query}')
     if not result.get('ok'):
-        safe_print(f"❌ {result.get('error', 'maps-reviews failed')}")
+        safe_print(f"Request failed: {result.get('error', 'maps-reviews failed')}")
         return
-
     selected = result.get('selectedPlace') or {}
-    safe_print(f'🎯 已选择第 {pick} 个地点进行评论抓取:')
-    print_places([selected], limit=1, title='目标地点', show_ids=True)
-    reviews = (result.get('reviews') or {}).get('reviews', []) or (result.get('reviews') or {}).get('organic', [])
+    safe_print(f'Selected place {pick}:')
+    print_places([selected], limit=1, title='Target place', show_ids=True)
+    reviews_payload = result.get('reviews') if isinstance(result.get('reviews'), dict) else {}
+    reviews = reviews_payload.get('reviews', []) or reviews_payload.get('organic', [])
     print_reviews(reviews, limit=limit)
-    safe_print(f"📡 数据来源: Google (via Serper.dev) | endpoint=maps-reviews | gl={gl} hl={hl}")
+    safe_print(f'Data source: Google (via Serper.dev) | endpoint=maps-reviews | gl={gl} hl={hl}')
 
 
 def render_maps_reviews_all_pretty(result, gl, hl, limit=5):
+    result = sanitize_external_data(result)
     query = result.get('query', '')
-    safe_print(f'🔍 Google (Serper) maps → reviews 全量联动: {query}...')
+    safe_print(f'Google (Serper) maps -> reviews --all: {query}')
     if not result.get('ok'):
-        safe_print(f"❌ {result.get('error', 'maps-reviews --all failed')}")
-        return
-
+        safe_print(f"Request failed: {result.get('error', 'maps-reviews --all failed')}")
     failed_count = result.get('failedCount', 0)
-    all_succeeded = result.get('allSucceeded', failed_count == 0)
-    status_text = '全部成功' if all_succeeded else f'部分失败（失败 {failed_count} 个）'
-    safe_print(f'📊 执行状态: {status_text}')
-
+    status_text = 'all succeeded' if result.get('allSucceeded') else f'failed/stopped ({failed_count} failed)'
+    safe_print(f'Status: {status_text}')
     for entry in result.get('results', []):
+        if not isinstance(entry, dict):
+            continue
         pick = entry.get('pick')
         place = entry.get('selectedPlace') or {}
-        safe_print(f'\n🎯 第 {pick} 个地点:')
-        print_places([place], limit=1, title='目标地点', show_ids=True)
+        safe_print(f'Place {pick}:')
+        print_places([place], limit=1, title='Target place', show_ids=True)
         if not entry.get('ok'):
-            safe_print(f"❌ 评论抓取失败: {entry.get('error', 'unknown error')}")
+            safe_print(f"Review request failed: {entry.get('error', 'unknown error')}")
             continue
-        reviews = (entry.get('reviews') or {}).get('reviews', []) or (entry.get('reviews') or {}).get('organic', [])
+        reviews_payload = entry.get('reviews') if isinstance(entry.get('reviews'), dict) else {}
+        reviews = reviews_payload.get('reviews', []) or reviews_payload.get('organic', [])
         print_reviews(reviews, limit=limit)
-
-    safe_print(f"📡 数据来源: Google (via Serper.dev) | endpoint=maps-reviews --all | gl={gl} hl={hl}")
+    safe_print(f'Data source: Google (via Serper.dev) | endpoint=maps-reviews --all | gl={gl} hl={hl}')

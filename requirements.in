@@ -1,0 +1,2 @@
+# Runtime dependencies. Keep direct requirements pinned before regenerating the lock.
+requests==2.34.2

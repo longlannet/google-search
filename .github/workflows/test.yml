@@ -4,42 +4,93 @@ on:
   push:
   pull_request:
 
+permissions:
+  contents: read
+
+env:
+  PYTEST_DISABLE_PLUGIN_AUTOLOAD: "1"
+
 jobs:
-  pytest:
-    runs-on: ubuntu-latest
+  test:
+    name: Python ${{ matrix.python-version }}
+    # This is a rolling GitHub-hosted image within the fixed Ubuntu 24.04 release.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.11", "3.12", "3.13", "3.14"]
+
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        # actions/checkout v7.0.1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        # actions/setup-python v7.0.0
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
         with:
-          python-version: '3.11'
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+          cache-dependency-path: requirements-dev.txt
 
-      - name: Prepare local venv and config
+      - name: Create the matrix runtime and bootstrap
         run: |
-          python -m venv .venv
-          .venv/bin/python -m pip install --upgrade pip
-          .venv/bin/pip install -r requirements.txt
-          .venv/bin/pip install pytest
-          cp config/serper.env.example config/serper.env
+          python -m venv --without-pip .venv
+          python -m venv "$RUNNER_TEMP/google-search-bootstrap"
 
-      - name: Verify required files exist
+      - name: Install locked test dependencies
+        env:
+          PIP_CONFIG_FILE: /dev/null
         run: |
-          test -f SKILL.md
-          test -f README.md
-          test -f scripts/search.py
-          test -f scripts/check.sh
-          test -f scripts/install.sh
+          bootstrap_python="$RUNNER_TEMP/google-search-bootstrap/bin/python"
+          "$bootstrap_python" -m pip --isolated --python "$PWD/.venv/bin/python" \
+            install --disable-pip-version-check --no-input \
+            --require-hashes --only-binary=:all: -r requirements-dev.txt
+          "$bootstrap_python" -m pip --isolated --python "$PWD/.venv/bin/python" check
+          test -z "$(find .venv/lib -type f -name '*.pth' -print -quit)"
+          test -z "$(find .venv/lib -path '*/site-packages/*' \
+            \( -name pip -o -name 'pip-*.dist-info' -o -name setuptools \
+            -o -name 'setuptools-*.dist-info' \) -print -quit)"
+          .venv/bin/python -I -S -c \
+            'import importlib.util; assert importlib.util.find_spec("pip") is None; assert importlib.util.find_spec("setuptools") is None'
 
-      - name: Check Python syntax
+      - name: Install pinned ShellCheck
+        env:
+          SHELLCHECK_VERSION: 0.11.0
+          SHELLCHECK_SHA256: 8c3be12b05d5c177a04c29e3c78ce89ac86f1595681cab149b65b97c4e227198
         run: |
-          .venv/bin/python -m py_compile scripts/*.py
+          set -euo pipefail
+          umask 077
+          archive="$RUNNER_TEMP/shellcheck-v${SHELLCHECK_VERSION}.tar.xz"
+          extract_dir="$RUNNER_TEMP/shellcheck-extract"
+          bin_dir="$RUNNER_TEMP/shellcheck-bin"
+          /usr/bin/curl --fail --location --proto '=https' --tlsv1.2 \
+            --connect-timeout 10 --max-time 60 --silent --show-error \
+            --output "$archive" \
+            "https://github.com/koalaman/shellcheck/releases/download/v${SHELLCHECK_VERSION}/shellcheck-v${SHELLCHECK_VERSION}.linux.x86_64.tar.xz"
+          printf '%s  %s\n' "$SHELLCHECK_SHA256" "$archive" | sha256sum --check --strict -
+          install -d -m 700 "$extract_dir" "$bin_dir"
+          tar --extract --xz --file "$archive" --directory "$extract_dir" \
+            --strip-components=1 "shellcheck-v${SHELLCHECK_VERSION}/shellcheck"
+          test -f "$extract_dir/shellcheck" -a ! -L "$extract_dir/shellcheck"
+          install -m 755 "$extract_dir/shellcheck" "$bin_dir/shellcheck"
+          printf '%s\n' "$bin_dir" >>"$GITHUB_PATH"
 
-      - name: Run lightweight tests
+      - name: Require the pinned ShellCheck gate
         run: |
-          .venv/bin/pytest -q tests/test_args.py tests/test_workflows.py
+          pinned_shellcheck="$RUNNER_TEMP/shellcheck-bin/shellcheck"
+          test "$(command -v shellcheck)" = "$pinned_shellcheck"
+          "$pinned_shellcheck" --version | grep -F 'version: 0.11.0'
+          "$pinned_shellcheck" --norc -x scripts/*.sh
+          awk '
+            BEGIN { print "set -euo pipefail" }
+            /^```bash$/ { in_bash = 1; next }
+            /^```$/ && in_bash { in_bash = 0; next }
+            in_bash { print }
+          ' references/releasing.md | "$pinned_shellcheck" --norc --shell=bash -
 
-      - name: Run lightweight skill check
-        run: |
-          RUN_SMOKE=0 bash scripts/check.sh
+      - name: Run offline project check
+        run: /bin/bash -p scripts/check.sh --venv
