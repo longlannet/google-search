@@ -28,32 +28,176 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: Harden the preinstalled matrix Python runtime
+        env:
+          PYTHON_SERIES: ${{ matrix.python-version }}
+        run: |
+          set -euo pipefail
+          # shellcheck disable=SC2154
+          python_series="${PYTHON_SERIES:?}"
+          case "$python_series" in 3.10|3.11|3.12|3.13|3.14) ;; *) exit 1 ;; esac
+          shopt -s nullglob
+          candidates=(/opt/hostedtoolcache/Python/"$python_series".*/x64)
+          shopt -u nullglob
+          test "${#candidates[@]}" -eq 1
+          python_location="${candidates[0]}"
+          [[ "$python_location" =~ ^/opt/hostedtoolcache/Python/3\.(10|11|12|13|14)\.[0-9]+/x64$ ]]
+          version_dir="${python_location%/*}"
+          cache_marker="${python_location}.complete"
+          current_uid="$(/usr/bin/id -u)"
+
+          test "$(/usr/bin/readlink -f -- "$python_location")" = "$python_location"
+          for directory in \
+            / /opt /opt/hostedtoolcache /opt/hostedtoolcache/Python \
+            "$version_dir" "$python_location"; do
+            test -d "$directory"
+            test ! -L "$directory"
+            owner="$(/usr/bin/stat -c '%u' -- "$directory")"
+            test "$owner" = 0 || test "$owner" = "$current_uid"
+          done
+          test -f "$cache_marker"
+          test ! -L "$cache_marker"
+          owner="$(/usr/bin/stat -c '%u' -- "$cache_marker")"
+          test "$owner" = 0 || test "$owner" = "$current_uid"
+          test "$(/usr/bin/stat -c '%h' -- "$cache_marker")" -eq 1
+
+          /usr/bin/sudo --non-interactive -- /usr/bin/chmod go-w -- \
+            /opt /opt/hostedtoolcache /opt/hostedtoolcache/Python
+          /usr/bin/sudo --non-interactive -- /usr/bin/chmod -R go-w -- "$version_dir"
+
+          for directory in \
+            / /opt /opt/hostedtoolcache /opt/hostedtoolcache/Python \
+            "$version_dir" "$python_location"; do
+            owner="$(/usr/bin/stat -c '%u' -- "$directory")"
+            mode="$(/usr/bin/stat -c '%a' -- "$directory")"
+            test "$owner" = 0 || test "$owner" = "$current_uid"
+            case "$mode" in ''|*[!0-7]*) exit 1 ;; esac
+            test $((8#$mode & 0022)) -eq 0
+          done
+          test -f "$cache_marker"
+          test ! -L "$cache_marker"
+          owner="$(/usr/bin/stat -c '%u' -- "$cache_marker")"
+          mode="$(/usr/bin/stat -c '%a' -- "$cache_marker")"
+          test "$owner" = 0 || test "$owner" = "$current_uid"
+          case "$mode" in ''|*[!0-7]*) exit 1 ;; esac
+          test $((8#$mode & 0022)) -eq 0
+          test $((8#$mode & 06000)) -eq 0
+          test "$(/usr/bin/stat -c '%h' -- "$cache_marker")" -eq 1
+          finding="$(/usr/bin/find -P "$version_dir" \
+            \( -type f -o -type d \) -perm /022 -print -quit)" || exit 1
+          test -z "$finding"
+          finding="$(/usr/bin/find -P "$version_dir" \
+            ! \( -uid 0 -o -uid "$current_uid" \) -print -quit)" || exit 1
+          test -z "$finding"
+          finding="$(/usr/bin/find -P "$version_dir" \
+            \( ! -type f -a ! -type d -a ! -type l \) -print -quit)" || exit 1
+          test -z "$finding"
+
+          python_target="$(/usr/bin/readlink -f -- "$python_location/bin/python")"
+          test "$python_target" = "$python_location/bin/python$python_series"
+          test -f "$python_target"
+          test ! -L "$python_target"
+          test -x "$python_target"
+          owner="$(/usr/bin/stat -c '%u' -- "$python_target")"
+          mode="$(/usr/bin/stat -c '%a' -- "$python_target")"
+          test "$owner" = 0 || test "$owner" = "$current_uid"
+          case "$mode" in ''|*[!0-7]*) exit 1 ;; esac
+          test $((8#$mode & 0022)) -eq 0
+          test $((8#$mode & 06000)) -eq 0
+          test "$(/usr/bin/stat -c '%h' -- "$python_target")" -eq 1
+          printf 'EXPECTED_PYTHON_LOCATION=%s\n' "$python_location" >>"$GITHUB_ENV"
+          printf 'EXPECTED_PYTHON_TARGET=%s\n' "$python_target" >>"$GITHUB_ENV"
+
       - name: Set up Python
         # actions/setup-python v7.0.0
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
         with:
           python-version: ${{ matrix.python-version }}
+          check-latest: false
           cache: pip
           cache-dependency-path: requirements-dev.txt
 
-      - name: Create the matrix runtime and bootstrap
+      - name: Verify selected Python runtime and create venvs
         run: |
-          python -m venv --without-pip .venv
-          python -m venv "$RUNNER_TEMP/google-search-bootstrap"
+          set -euo pipefail
+          umask 077
+          # setup-python exports pythonLocation; the preflight exports the expected path.
+          # shellcheck disable=SC2154
+          python_location="${pythonLocation:?}"
+          # shellcheck disable=SC2154
+          expected_location="${EXPECTED_PYTHON_LOCATION:?}"
+          # shellcheck disable=SC2154
+          expected_target="${EXPECTED_PYTHON_TARGET:?}"
+          test "$python_location" = "$expected_location"
+          version_dir="${python_location%/*}"
+          cache_marker="${python_location}.complete"
+          current_uid="$(/usr/bin/id -u)"
+
+          test "$(/usr/bin/readlink -f -- "$python_location")" = "$python_location"
+          for directory in \
+            / /opt /opt/hostedtoolcache /opt/hostedtoolcache/Python \
+            "$version_dir" "$python_location"; do
+            test -d "$directory"
+            test ! -L "$directory"
+            owner="$(/usr/bin/stat -c '%u' -- "$directory")"
+            mode="$(/usr/bin/stat -c '%a' -- "$directory")"
+            test "$owner" = 0 || test "$owner" = "$current_uid"
+            case "$mode" in ''|*[!0-7]*) exit 1 ;; esac
+            test $((8#$mode & 0022)) -eq 0
+          done
+          test -f "$cache_marker"
+          test ! -L "$cache_marker"
+          owner="$(/usr/bin/stat -c '%u' -- "$cache_marker")"
+          mode="$(/usr/bin/stat -c '%a' -- "$cache_marker")"
+          test "$owner" = 0 || test "$owner" = "$current_uid"
+          case "$mode" in ''|*[!0-7]*) exit 1 ;; esac
+          test $((8#$mode & 0022)) -eq 0
+          test $((8#$mode & 06000)) -eq 0
+          test "$(/usr/bin/stat -c '%h' -- "$cache_marker")" -eq 1
+          finding="$(/usr/bin/find -P "$version_dir" \
+            \( -type f -o -type d \) -perm /022 -print -quit)" || exit 1
+          test -z "$finding"
+          finding="$(/usr/bin/find -P "$version_dir" \
+            ! \( -uid 0 -o -uid "$current_uid" \) -print -quit)" || exit 1
+          test -z "$finding"
+          finding="$(/usr/bin/find -P "$version_dir" \
+            \( ! -type f -a ! -type d -a ! -type l \) -print -quit)" || exit 1
+          test -z "$finding"
+
+          python_target="$(/usr/bin/readlink -f -- "$python_location/bin/python")"
+          test "$python_target" = "$expected_target"
+          test -f "$python_target"
+          test ! -L "$python_target"
+          test -x "$python_target"
+          owner="$(/usr/bin/stat -c '%u' -- "$python_target")"
+          mode="$(/usr/bin/stat -c '%a' -- "$python_target")"
+          test "$owner" = 0 || test "$owner" = "$current_uid"
+          case "$mode" in ''|*[!0-7]*) exit 1 ;; esac
+          test $((8#$mode & 0022)) -eq 0
+          test $((8#$mode & 06000)) -eq 0
+          test "$(/usr/bin/stat -c '%h' -- "$python_target")" -eq 1
+          test "$(/usr/bin/readlink -f -- "$(command -v python)")" = "$python_target"
+
+          "$python_location/bin/python" -m venv --without-pip .venv
+          "$python_location/bin/python" -m venv "$RUNNER_TEMP/google-search-bootstrap"
 
       - name: Install locked test dependencies
         env:
           PIP_CONFIG_FILE: /dev/null
         run: |
+          set -euo pipefail
+          umask 077
           bootstrap_python="$RUNNER_TEMP/google-search-bootstrap/bin/python"
           "$bootstrap_python" -m pip --isolated --python "$PWD/.venv/bin/python" \
             install --disable-pip-version-check --no-input \
             --require-hashes --only-binary=:all: -r requirements-dev.txt
           "$bootstrap_python" -m pip --isolated --python "$PWD/.venv/bin/python" check
-          test -z "$(find .venv/lib -type f -name '*.pth' -print -quit)"
-          test -z "$(find .venv/lib -path '*/site-packages/*' \
+          finding="$(/usr/bin/find -P .venv/lib -type f -name '*.pth' -print -quit)" || exit 1
+          test -z "$finding"
+          finding="$(/usr/bin/find -P .venv/lib -path '*/site-packages/*' \
             \( -name pip -o -name 'pip-*.dist-info' -o -name setuptools \
-            -o -name 'setuptools-*.dist-info' \) -print -quit)"
+            -o -name 'setuptools-*.dist-info' \) -print -quit)" || exit 1
+          test -z "$finding"
           .venv/bin/python -I -S -c \
             'import importlib.util; assert importlib.util.find_spec("pip") is None; assert importlib.util.find_spec("setuptools") is None'
 
@@ -81,6 +225,7 @@ jobs:
 
       - name: Require the pinned ShellCheck gate
         run: |
+          set -euo pipefail
           pinned_shellcheck="$RUNNER_TEMP/shellcheck-bin/shellcheck"
           test "$(command -v shellcheck)" = "$pinned_shellcheck"
           "$pinned_shellcheck" --version | grep -F 'version: 0.11.0'

@@ -1,3 +1,4 @@
+import ast
 import fcntl
 import json
 import os
@@ -55,6 +56,251 @@ def run_command(args, *, cwd, env=None, timeout=30, pass_fds=()):
         check=False,
         pass_fds=pass_fds,
     )
+
+
+PYTHON_SUBPROCESS_FUNCTIONS = {
+    'run_command',
+    'subprocess.Popen',
+    'subprocess.call',
+    'subprocess.check_call',
+    'subprocess.check_output',
+    'subprocess.run',
+}
+
+
+def _is_python_executable_literal(expression):
+    for node in ast.walk(expression):
+        if (isinstance(node, ast.Attribute)
+                and isinstance(node.value, ast.Name)
+                and node.value.id == 'sys'
+                and node.attr == 'executable'):
+            return True
+        if isinstance(node, ast.Name) and 'python' in node.id.lower():
+            return True
+        if (isinstance(node, ast.Constant)
+                and isinstance(node.value, str)
+                and 'python' in node.value.lower()):
+            return True
+    return False
+
+
+def _has_effective_bytecode_guard(arguments):
+    consumes_next = False
+    for argument in arguments.elts[1:]:
+        if consumes_next:
+            consumes_next = False
+            continue
+        if not isinstance(argument, ast.Constant) or not isinstance(argument.value, str):
+            return False
+        value = argument.value
+        if value == '-B':
+            return True
+        if value in {'-c', '-m', '-', '--'} or not value.startswith('-'):
+            return False
+        if value in {'-W', '-X', '--check-hash-based-pycs'}:
+            consumes_next = True
+    return False
+
+
+class _PythonSubprocessLiteralVisitor(ast.NodeVisitor):
+    def __init__(self, tree, filename):
+        self.filename = filename
+        self.failures = []
+        self.scopes = []
+        self.run_command_defined = False
+        self.parents = {
+            child: parent
+            for parent in ast.walk(tree)
+            for child in ast.iter_child_nodes(parent)
+        }
+
+    def _fail(self, node, reason):
+        self.failures.append((self.filename, node.lineno, reason))
+
+    def visit_Import(self, node):
+        for alias in node.names:
+            bound_name = alias.asname or alias.name.split('.', 1)[0]
+            if alias.name == 'subprocess' and alias.asname is not None:
+                self._fail(node, 'subprocess import aliases are forbidden')
+            elif bound_name == 'run_command':
+                self._fail(node, 'run_command imports are forbidden')
+            elif bound_name == 'subprocess' and not (
+                alias.name == 'subprocess' and alias.asname is None
+            ):
+                self._fail(node, 'subprocess import aliases are forbidden')
+
+    def visit_ImportFrom(self, node):
+        for alias in node.names:
+            bound_name = alias.asname or alias.name
+            if node.module == 'subprocess' or bound_name in {'run_command', 'subprocess'}:
+                self._fail(node, 'subprocess and run_command import aliases are forbidden')
+
+    def visit_Name(self, node):
+        if (isinstance(node.ctx, (ast.Store, ast.Del))
+                and node.id in {'run_command', 'subprocess'}):
+            self._fail(node, f'{node.id} rebinding is forbidden')
+            return
+        if not isinstance(node.ctx, ast.Load):
+            return
+        parent = self.parents.get(node)
+        if (node.id == 'run_command'
+                and not (isinstance(parent, ast.Call) and parent.func is node)):
+            self._fail(node, 'run_command aliases are forbidden')
+        elif (node.id == 'subprocess'
+              and not (isinstance(parent, ast.Attribute) and parent.value is node)):
+            self._fail(node, 'subprocess module aliases are forbidden')
+
+    def visit_arg(self, node):
+        if node.arg in {'run_command', 'subprocess'}:
+            self._fail(node, f'{node.arg} argument shadowing is forbidden')
+
+    def visit_ExceptHandler(self, node):
+        if node.name in {'run_command', 'subprocess'}:
+            self._fail(node, f'{node.name} exception binding is forbidden')
+        self.generic_visit(node)
+
+    def visit_MatchAs(self, node):
+        if node.name in {'run_command', 'subprocess'}:
+            self._fail(node, f'{node.name} match capture is forbidden')
+        self.generic_visit(node)
+
+    def visit_MatchStar(self, node):
+        if node.name in {'run_command', 'subprocess'}:
+            self._fail(node, f'{node.name} match capture is forbidden')
+        self.generic_visit(node)
+
+    def visit_MatchMapping(self, node):
+        if node.rest in {'run_command', 'subprocess'}:
+            self._fail(node, f'{node.rest} match capture is forbidden')
+        self.generic_visit(node)
+
+    def _visit_function(self, node):
+        if node.name == 'run_command' and not self.scopes and not self.run_command_defined:
+            self.run_command_defined = True
+        elif node.name in {'run_command', 'subprocess'}:
+            self._fail(node, f'{node.name} function shadowing is forbidden')
+        for decorator in node.decorator_list:
+            self.visit(decorator)
+        for default in (*node.args.defaults, *node.args.kw_defaults):
+            if default is not None:
+                self.visit(default)
+        for argument in (*node.args.posonlyargs, *node.args.args,
+                         *node.args.kwonlyargs):
+            self.visit(argument)
+        if node.args.vararg is not None:
+            self.visit(node.args.vararg)
+        if node.args.kwarg is not None:
+            self.visit(node.args.kwarg)
+        self.scopes.append(('function', node.name))
+        for statement in node.body:
+            self.visit(statement)
+        self.scopes.pop()
+
+    def visit_FunctionDef(self, node):
+        self._visit_function(node)
+
+    visit_AsyncFunctionDef = visit_FunctionDef
+
+    def visit_ClassDef(self, node):
+        if node.name in {'run_command', 'subprocess'}:
+            self._fail(node, f'{node.name} class shadowing is forbidden')
+        self.scopes.append(('class', node.name))
+        self.generic_visit(node)
+        self.scopes.pop()
+
+    def _subprocess_function(self, expression):
+        if isinstance(expression, ast.Name) and expression.id == 'run_command':
+            return expression.id
+        if (isinstance(expression, ast.Attribute)
+                and isinstance(expression.value, ast.Name)
+                and expression.value.id == 'subprocess'):
+            candidate = f'subprocess.{expression.attr}'
+            return candidate if candidate in PYTHON_SUBPROCESS_FUNCTIONS else None
+        return None
+
+    def visit_Attribute(self, node):
+        if (isinstance(node.value, ast.Name)
+                and node.value.id == 'subprocess'
+                and f'subprocess.{node.attr}' in PYTHON_SUBPROCESS_FUNCTIONS):
+            parent = self.parents.get(node)
+            if not (isinstance(parent, ast.Call) and parent.func is node):
+                self._fail(node, 'subprocess callable aliases are forbidden')
+        self.generic_visit(node)
+
+    def visit_Call(self, node):
+        function = self._subprocess_function(node.func)
+        if function is not None:
+            expression = node.args[0] if node.args else next(
+                (keyword.value for keyword in node.keywords if keyword.arg == 'args'),
+                None,
+            )
+            if isinstance(expression, (ast.List, ast.Tuple)) and expression.elts:
+                arguments = expression
+                if (_is_python_executable_literal(arguments.elts[0])
+                        and not _has_effective_bytecode_guard(arguments)):
+                    self._fail(node, 'Python subprocess is missing an effective -B option')
+        self.generic_visit(node)
+
+
+def python_subprocess_literals_without_bytecode_guard(source, *, filename):
+    tree = ast.parse(source, filename=filename)
+    visitor = _PythonSubprocessLiteralVisitor(tree, filename)
+    visitor.visit(tree)
+    return visitor.failures
+
+
+def test_python_subprocess_literals_disable_bytecode_writes():
+    failures = []
+    for path in sorted((ROOT / 'tests').glob('test_*.py')):
+        failures.extend(python_subprocess_literals_without_bytecode_guard(
+            path.read_text(encoding='utf-8'),
+            filename=str(path),
+        ))
+    assert failures == []
+
+
+def test_python_subprocess_literal_guard_covers_supported_call_forms():
+    for function in sorted(PYTHON_SUBPROCESS_FUNCTIONS):
+        for template in ('{function}([sys.executable, "-c", "pass"])',
+                         '{function}(args=(sys.executable, "-c", "pass"))'):
+            source = template.format(function=function)
+            assert python_subprocess_literals_without_bytecode_guard(
+                source,
+                filename='adversarial.py',
+            ) == [(
+                'adversarial.py',
+                1,
+                'Python subprocess is missing an effective -B option',
+            )]
+            assert python_subprocess_literals_without_bytecode_guard(
+                source.replace('"-c"', '"-B", "-c"'),
+                filename='adversarial.py',
+            ) == []
+
+    bad_sources = (
+        'subprocess.run([sys.executable, "-c", "pass", "-B"])',
+        'subprocess.run([sys.executable, "--", "-B"])',
+        'import subprocess as sp\nsp.run([sys.executable, "-c", "pass"])',
+        'from subprocess import check_output as output\noutput([sys.executable, "-c", "pass"])',
+        'import subprocess\nsubprocess = object()',
+        'import subprocess\nif condition:\n    subprocess = safe\nelse:\n    subprocess = unsafe',
+        'runner = subprocess.run\nrunner([sys.executable, "-B", "-c", "pass"])',
+        'module = subprocess\nmodule.run([sys.executable, "-B", "-c", "pass"])',
+        'try:\n    pass\nexcept Exception as subprocess:\n    pass',
+        'match value:\n    case subprocess:\n        pass',
+        'match value:\n    case [*run_command]:\n        pass',
+        'match value:\n    case {"x": x, **subprocess}:\n        pass',
+    )
+    for source in bad_sources:
+        assert python_subprocess_literals_without_bytecode_guard(
+            source,
+            filename='adversarial.py',
+        )
+
+    assert python_subprocess_literals_without_bytecode_guard(
+        'def run_command(args):\n    return subprocess.run(args)',
+        filename='wrapper.py',
+    ) == []
 
 
 def make_test_repo(tmp_path):
@@ -191,7 +437,7 @@ def make_test_repo(tmp_path):
 def create_stub_runtime(repo, *, with_pytest=False):
     venv = repo / '.venv'
     subprocess.run(
-        [sys.executable, '-m', 'venv', '--without-pip', str(venv)],
+        [sys.executable, '-B', '-m', 'venv', '--without-pip', str(venv)],
         check=True,
         capture_output=True,
         text=True,
@@ -199,7 +445,7 @@ def create_stub_runtime(repo, *, with_pytest=False):
     python = venv / 'bin' / 'python'
     site_packages = Path(
         subprocess.run(
-            [str(python), '-I', '-c', 'import site; print(site.getsitepackages()[0])'],
+            [str(python), '-I', '-B', '-c', 'import site; print(site.getsitepackages()[0])'],
             check=True,
             capture_output=True,
             text=True,
@@ -275,7 +521,7 @@ def create_stub_runtime(repo, *, with_pytest=False):
             ),
             '_pytest/__init__.py': '',
             '_pytest/config/__init__.py': (
-                'import json, os, pathlib\n'
+                'import json, os, pathlib, subprocess, sys\n'
                 'from types import SimpleNamespace\n'
                 'class Config:\n    pass\n'
                 'def main(args=None, plugins=None):\n'
@@ -286,6 +532,8 @@ def create_stub_runtime(repo, *, with_pytest=False):
                 '            "plugins": os.environ.get("PYTEST_PLUGINS"),\n'
                 '            "debug_temproot": os.environ.get("PYTEST_DEBUG_TEMPROOT"),\n'
                 '            "autoload": os.environ.get("PYTEST_DISABLE_PLUGIN_AUTOLOAD"),\n'
+                '            "dont_write_bytecode": os.environ.get("PYTHONDONTWRITEBYTECODE"),\n'
+                '            "pycache_prefix": os.environ.get("PYTHONPYCACHEPREFIX"),\n'
                 '            "SERPER_API_KEY": os.environ.get("SERPER_API_KEY"),\n'
                 '            "SERPER_API_KEYS": os.environ.get("SERPER_API_KEYS"),\n'
                 '            "release_archive": os.environ.get("GOOGLE_SEARCH_RELEASE_ARCHIVE"),\n'
@@ -294,6 +542,15 @@ def create_stub_runtime(repo, *, with_pytest=False):
                 '            "tmp": os.environ.get("TMP"), "temp": os.environ.get("TEMP"),\n'
                 '            "args": args,\n'
                 '        }))\n'
+                '    child_marker = os.environ.get("CHECK_PYTEST_CHILD_IMPORT_MARKER")\n'
+                '    if child_marker:\n'
+                '        child = subprocess.run(\n'
+                '            [sys.executable, "-c",\n'
+                '             "import google_search_bytecode_probe"],\n'
+                '            check=False, env=os.environ.copy(),\n'
+                '        )\n'
+                '        if child.returncode != 0:\n'
+                '            raise AssertionError("pytest child import failed")\n'
                 '    mutation = os.environ.get("CHECK_PYTEST_SOURCE_MUTATION")\n'
                 '    if mutation:\n'
                 '        target = pathlib.Path(os.environ["CHECK_PYTEST_SOURCE_MUTATION_TARGET"])\n'
@@ -431,7 +688,12 @@ def test_shell_entrypoints_start_in_privileged_mode():
     ]
     for name in ('install.sh', 'run.sh', 'check.sh'):
         path = ROOT / 'scripts' / name
-        assert path.read_text(encoding='utf-8').splitlines()[:len(expected_prelude)] == expected_prelude
+        prelude_length = len(expected_prelude) + (name == 'check.sh')
+        actual_prelude = path.read_text(encoding='utf-8').splitlines()[:prelude_length]
+        if name == 'check.sh':
+            assert actual_prelude[10] == 'unset PYTHONDONTWRITEBYTECODE PYTHONPYCACHEPREFIX'
+            del actual_prelude[10]
+        assert actual_prelude == expected_prelude
         assert path.stat().st_mode & 0o111 == 0o111
 
 
@@ -1362,6 +1624,46 @@ def test_shell_runtime_accepts_safe_intermediate_symlink_in_pyvenv_home(
         assert json.loads(result.stdout)['ok'] is True
 
 
+def test_run_rejects_pyvenv_home_beneath_nonsticky_world_writable_tool_cache(
+    tmp_path,
+):
+    repo = make_test_repo(tmp_path)
+    python = create_stub_runtime(repo)
+    marker = tmp_path / 'unsafe-tool-cache-python-executed'
+    config = repo / '.venv' / 'pyvenv.cfg'
+    config_text = config.read_text(encoding='utf-8')
+    home_match = re.search(r'^home\s*=\s*(.+)$', config_text, flags=re.MULTILINE)
+    assert home_match is not None
+    original_home = Path(home_match.group(1))
+    tool_cache = tmp_path / 'hostedtoolcache'
+    tool_cache.mkdir(mode=0o700)
+    alias = tool_cache / 'Python'
+    alias.symlink_to(original_home.parent, target_is_directory=True)
+    tool_cache.chmod(0o777)
+    config.write_text(
+        re.sub(
+            r'^home\s*=.*$',
+            f'home = {alias / original_home.name}',
+            config_text,
+            count=1,
+            flags=re.MULTILINE,
+        ),
+        encoding='utf-8',
+    )
+    python.unlink()
+    python.write_text(f'#!/bin/sh\n: > {marker}\nexit 97\n', encoding='utf-8')
+    python.chmod(0o700)
+
+    result = run_command(
+        ['/bin/bash', '-p', 'scripts/run.sh', '--venv', '--runtime-info'],
+        cwd=repo,
+    )
+
+    assert result.returncode == 3
+    assert result.stdout == ''
+    assert not marker.exists()
+
+
 @pytest.mark.skipif(os.geteuid() != 0, reason='changing symlink ownership requires root')
 @pytest.mark.parametrize(
     ('entrypoint', 'arguments'),
@@ -1557,7 +1859,7 @@ def test_run_binds_the_venv_python_symlink_across_the_health_probe(tmp_path):
     replacement.chmod(0o700)
     site_packages = Path(
         subprocess.run(
-            [str(python), '-I', '-c', 'import site; print(site.getsitepackages()[0])'],
+            [str(python), '-I', '-B', '-c', 'import site; print(site.getsitepackages()[0])'],
             check=True,
             capture_output=True,
             text=True,
@@ -1593,7 +1895,7 @@ def test_run_detects_same_size_site_file_mutation_during_health_probe(tmp_path):
     )
     site_packages = Path(
         subprocess.run(
-            [str(python), '-I', '-c', 'import site; print(site.getsitepackages()[0])'],
+            [str(python), '-I', '-B', '-c', 'import site; print(site.getsitepackages()[0])'],
             check=True,
             capture_output=True,
             text=True,
@@ -1662,7 +1964,7 @@ def test_run_rejects_group_writable_site_packages(tmp_path):
     python = create_stub_runtime(repo)
     site_packages = Path(
         subprocess.run(
-            [str(python), '-I', '-c', 'import site; print(site.getsitepackages()[0])'],
+            [str(python), '-I', '-B', '-c', 'import site; print(site.getsitepackages()[0])'],
             check=True,
             capture_output=True,
             text=True,
@@ -1792,7 +2094,7 @@ def test_run_requires_all_locked_runtime_packages_and_requests_api(tmp_path):
     python = create_stub_runtime(repo)
     site_packages = Path(
         subprocess.run(
-            [str(python), '-I', '-c', 'import site; print(site.getsitepackages()[0])'],
+            [str(python), '-I', '-B', '-c', 'import site; print(site.getsitepackages()[0])'],
             check=True,
             capture_output=True,
             text=True,
@@ -1921,7 +2223,7 @@ def test_check_rejects_checkout_replacement_after_runner_returns(tmp_path):
     )
 
     assert result.returncode == 1
-    assert 'source tree or its parent chain changed during the check' in result.stderr
+    assert 'source tree, parent chain, or selected runtime changed during the check' in result.stderr
     assert not repo.exists()
     assert repo.with_name(f'{repo.name}.replaced').is_dir()
 
@@ -1946,7 +2248,7 @@ def test_check_rejects_python_source_replacement_after_runner_returns(tmp_path):
     )
 
     assert result.returncode == 1
-    assert 'source tree or its parent chain changed during the check' in result.stderr
+    assert 'source tree, parent chain, or selected runtime changed during the check' in result.stderr
 
 
 def test_check_ignores_preexisting_bytecode_cache_and_does_not_reuse_it(tmp_path):
@@ -2824,6 +3126,7 @@ def test_install_builds_fresh_candidate_and_atomically_replaces_venv(tmp_path):
         [
             str(repo / '.venv' / 'bin' / 'python'),
             '-I',
+            '-B',
             '-c',
             (
                 'import importlib.metadata, importlib.util, json, site, pathlib; '
@@ -3545,6 +3848,7 @@ def test_install_refuses_concurrent_transaction_without_touching_venv(tmp_path):
     holder = subprocess.Popen(
         [
             sys.executable,
+            '-B',
             '-c',
             (
                 'import fcntl, os, sys\n'
@@ -3578,6 +3882,15 @@ def test_install_refuses_concurrent_transaction_without_touching_venv(tmp_path):
 def test_check_default_runs_only_offline_parsing_group(tmp_path):
     repo = make_test_repo(tmp_path)
     create_stub_runtime(repo, with_pytest=True)
+    site_packages = next((repo / '.venv' / 'lib').glob('python*/site-packages'))
+    bytecode_probe = site_packages / 'google_search_bytecode_probe.py'
+    bytecode_marker = tmp_path / 'pytest-child-imported'
+    bytecode_probe.write_text(
+        'import os\n'
+        'from pathlib import Path\n'
+        'Path(os.environ["CHECK_PYTEST_CHILD_IMPORT_MARKER"]).write_text("imported")\n',
+        encoding='utf-8',
+    )
     record = tmp_path / 'selfcheck-args.json'
     pytest_record = tmp_path / 'pytest-env.json'
     result_path_record = tmp_path / 'result-path.txt'
@@ -3586,6 +3899,7 @@ def test_check_default_runs_only_offline_parsing_group(tmp_path):
     hostile_bin = tmp_path / 'hostile-bin'
     hostile_bin.mkdir()
     hostile_tool_marker = tmp_path / 'hostile-tool-called'
+    hostile_pycache_prefix = tmp_path / 'hostile-pycache-prefix'
     for name in ('python3', 'pytest', 'mktemp', 'shellcheck'):
         tool = hostile_bin / name
         tool.write_text(f'#!/bin/sh\ntouch {hostile_tool_marker}\nexit 99\n', encoding='utf-8')
@@ -3606,8 +3920,11 @@ def test_check_default_runs_only_offline_parsing_group(tmp_path):
             'PYTEST_PLUGINS': 'untrusted_plugin',
             'PYTEST_DEBUG_TEMPROOT': str(tmp_path / 'hostile-pytest-temp-root'),
             'PYTEST_DISABLE_PLUGIN_AUTOLOAD': '0',
+            'PYTHONDONTWRITEBYTECODE': '',
+            'PYTHONPYCACHEPREFIX': str(hostile_pycache_prefix),
             'CHECK_PYTEST_ENV_RECORD': str(pytest_record),
             'CHECK_PYTEST_MAIN_MARKER': str(pytest_main_marker),
+            'CHECK_PYTEST_CHILD_IMPORT_MARKER': str(bytecode_marker),
             'SERPER_API_KEY': 'must-not-reach-offline-pytest',
             'SERPER_API_KEYS': 'must-not-reach-offline-pytest-either',
         },
@@ -3622,6 +3939,8 @@ def test_check_default_runs_only_offline_parsing_group(tmp_path):
         'plugins': None,
         'debug_temproot': None,
         'autoload': '1',
+        'dont_write_bytecode': '1',
+        'pycache_prefix': None,
         'SERPER_API_KEY': None,
         'SERPER_API_KEYS': None,
         'release_archive': None,
@@ -3640,6 +3959,9 @@ def test_check_default_runs_only_offline_parsing_group(tmp_path):
     assert not marker.exists()
     assert not pytest_main_marker.exists()
     assert not hostile_tool_marker.exists()
+    assert bytecode_marker.read_text(encoding='utf-8') == 'imported'
+    assert list(site_packages.rglob('google_search_bytecode_probe*.pyc')) == []
+    assert not hostile_pycache_prefix.exists()
     assert list(tmp_path.glob('google-search-check-*')) == []
 
 
@@ -3729,7 +4051,7 @@ def test_check_rejects_wrong_transitive_development_distribution_version(tmp_pat
     python = create_stub_runtime(repo, with_pytest=True)
     site_packages = Path(
         subprocess.run(
-            [str(python), '-I', '-c', 'import site; print(site.getsitepackages()[0])'],
+            [str(python), '-I', '-B', '-c', 'import site; print(site.getsitepackages()[0])'],
             check=True,
             capture_output=True,
             text=True,
@@ -3768,7 +4090,7 @@ def test_check_detects_root_release_candidate_mutation_during_pytest(tmp_path, m
     )
 
     assert result.returncode == 1
-    assert 'source tree or its parent chain changed during the check' in result.stderr
+    assert 'source tree, parent chain, or selected runtime changed during the check' in result.stderr
 
 
 def test_check_rejects_pytest_main_that_returns_success_without_lifecycle_hooks(tmp_path):
@@ -3776,7 +4098,7 @@ def test_check_rejects_pytest_main_that_returns_success_without_lifecycle_hooks(
     python = create_stub_runtime(repo, with_pytest=True)
     site_packages = Path(
         subprocess.run(
-            [str(python), '-I', '-c', 'import site; print(site.getsitepackages()[0])'],
+            [str(python), '-I', '-B', '-c', 'import site; print(site.getsitepackages()[0])'],
             check=True,
             capture_output=True,
             text=True,

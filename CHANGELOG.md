@@ -4,7 +4,7 @@
 
 格式参考 Keep a Changelog，版本号建议遵循 Semantic Versioning（语义化版本）。
 
-## [v2.0.0] - 2026-08-21
+## [v2.0.0] - 2026-08-23
 
 ### Security
 
@@ -25,7 +25,8 @@
 - 候选 venv 的事务锁、source snapshot 和 candidate inode 在创建、安装、验证、原子发布与回滚间持续绑定；根目录未知发布候选、同尺寸源码替换、孤立 bytecode、目录 symlink 和 task 参数注入均 fail closed
 - 发布配方不再直接启动未经入口验证的 `/usr/bin/python3`；首次执行工作树 runner 前新增独立目录/Git clean gate，验证 checkout 祖先和 tracked 父目录并逐个以 `hash-object --no-filters` 绑定 index/worktree blob，且不调用可执行仓库本地 clean/process filter 的 `git diff-files`；后续完整 blob 校验迁入固定 runner task，并清理 loader/Python 注入环境、稳定读取私有 manifest、逐字节绑定明确 commit 的 tar
 - 正式发布 shell 对仓库本地 Git 配置执行精确白名单并在每次 Git 调用前重检，同时固定 hooks、fsmonitor、alternate refs、维护、GPG 和 HTTPS transport；它还拒绝 `commondir`、worktree config、legacy `info/grafts`、object alternates、symlink、hardlink、特殊文件和不安全的 Git 元数据权限，并核对 absolute git/common dir；push 显式禁止 follow-tags、push options、push certificate 与 submodule 递归，避免配置或元数据漂移执行命令、伪造 ancestry、重定向 ref/object 写入或越界上传其他 ref
-- commit、tag 与 checksum 的验签统一绑定到远端写入前从可信公钥建立的 fresh `GNUPGHOME`，只接受唯一 primary fingerprint 和 SHA-256 `VALIDSIG`，并拒绝错误、过期或撤销状态；清理会有界停止该 home 的私有 `gpg-agent` 并删除其精确 hashed socket 目录，不影响默认 keyring/agent
+- commit、tag 与 checksum 的验签统一绑定到从固定签名者权威 HTTPS 渠道建立的 fresh `GNUPGHOME`，并分别在签名 commit 前、创建 tag 前、immutable draft 前重新下载 key snapshot；只接受唯一 primary fingerprint 和 SHA-256 `VALIDSIG`，拒绝错误、过期或撤销状态。每次刷新和最终清理都会有界停止该 home 的私有 `gpg-agent` 并删除其精确 hashed socket 目录，不影响默认 keyring/agent
+- 发布锁分为跨版本仓库锁与主机级 `gh` active-account 锁，按固定顺序持有至账号恢复；main/tag push、空 draft 创建、逐资产无覆盖上传和 publish 均在客户端不确定失败后只读核对精确 refs、Release ID、身份、资产 allowlist 与回下载字节，任何缺失、部分或冲突状态都会停止且不会强推、移动 tag 或覆盖资产
 
 ### Changed
 
@@ -41,7 +42,7 @@
 - 新增 `install.sh --install-dev-dependencies`，为完整离线 `check.sh` 安装独立的哈希锁定测试工具链
 - 新增安全文件输出公共实现及针对参数边界、HTTP fallback、payload、workflow、保存路径、installer、wrapper、selfcheck 与退出码的回归测试
 - 新增 Dependabot 配置，只跟踪可保持完整 SHA pin 的 GitHub Actions 更新；Python 双锁必须继续使用固定 uv/cutoff 配方受控重建
-- 文档新增可执行发布 runbook：未来 release 需在任何远端写入前完成 commit-bound 归档与真实安装 canary，并具备 signed commit/tag、SHA-256 签名校验和、绑定作者/标题/正文的 immutable draft、精确资产回验、GitHub release attestation 与匿名公网字节验证；历史缺失证据不能回溯补成已验证发布
+- 文档新增可执行发布 runbook：未来 release 需在任何远端写入前完成 commit-bound 归档与真实安装 canary，并具备 signed commit/tag、SHA-256 签名校验和、绑定作者/标题/正文/数值 ID 的 immutable draft、精确资产回验、GitHub release attestation、匿名 Latest REST/digest allowlist、固定版本与 `latest/download` 双路公网字节验证，以及原子保留 commit/tag/CI/Release/资产摘要的 root-owned evidence 文件；历史缺失证据不能回溯补成已验证发布
 - 固定并记录 `uv 0.11.6` 与依赖解析 cutoff，新增有界归档卫生策略：拒绝已列明的敏感路径、非占位 Serper 赋值与已识别私钥头，以及 runtime、输出、虚拟环境、安装锁和缓存；它不充当通用 secret scanner
 - runtime 选择现会核对完整五包版本和关键 API；搜索 pretty/JSON/raw 输出与保存统一执行整次 16 MiB 上限
 
@@ -55,13 +56,17 @@
 - quiet 在线 smoke/full 在结果协议失败或信号退出时同样清理私有临时结果，不再只覆盖 worker 失败和成功路径
 - 安装器在 online worker 与依赖安装 helper 的 fork/PID 登记窗口内记录并定向处理 HUP/INT/TERM，退出前等待原 Bash job，避免信号竞态留下继续联网或修改候选 venv 的孤儿进程
 - tag 阶段在推送前重检 main，并将 main 与 tag 放入同一 atomic push；runbook 明确这不是跨 ref compare-and-swap，并要求从第二次 tag/release precheck 到 immutable 终验完成的整个 publication window 排除其他 publisher/admin。等待 tag CI 后还会在 immutable 设置、draft 上传和正式发布前重复核对 publisher/admin、干净工作树、main/tag 与两次精确 commit CI
+- CI run 等待不再通过可能关闭 `inherit_errexit` 的 command substitution 返回 run ID；poll、deadline、watch、run identity 和恰好五个 `completed|success` job 均显式传播失败，只有全部断言通过后才写入全局 run ID
+- immutable 发布后若最终 evidence 的 hard-link 或目录 fsync 失败，EXIT cleanup 会保留并报告已经 fsync 的 root-owned `0600` 恢复文件，而不是删除同版本无法重建的唯一证据；发布前残片仍会清理
 - CI 将每个矩阵 Python 建成本地 `.venv` 后只运行完整 `check.sh --venv` 门禁，避免 PATH 净化后误用 Ubuntu 系统 Python
+- 正式 pytest 阶段现在清除外部 bytecode cache prefix，并为普通 Python 子进程设置禁写环境；所有 isolated Python 测试子进程显式带 `-B`，避免 `-I` 忽略 `PYTHON*` 后让 fresh 事务安装环境自我修改并使 runtime token 漂移。绑定复核失败的诊断也不再把 selected runtime 变化误报成仅源码变化
 - 发布归档门禁可把实际 tar 逐字节绑定到明确的 40 位 commit，并直接检查该资产而不是只检查工作树重建物
 - Lens 完整自检改用稳定的公开图片，避免站点 favicon 合法返回空视觉结果造成误报，并绑定协议校验中的探针参数
 
 ### CI
 
 - GitHub Actions 固定 `ubuntu-24.04`、最小只读权限、job timeout、关闭 checkout credential 持久化，并将 checkout/setup-python 固定到已注明版本的完整提交 SHA
+- CI 在固定 `setup-python` 执行前按矩阵版本只接受唯一的预装 `/opt/hostedtoolcache/Python/<version>/x64`，在一次性 runner 上去除其完整运行时树与祖先的组/全局写权限；action 后还会精确绑定所选路径，并复核规范路径、属主、文件类型和实际 `python` 目标。这保留上游编译 prefix/RUNPATH，也不放宽 runtime 父链守卫
 - CI 覆盖 Python 3.10–3.14，使用 `--require-hashes --only-binary=:all:` 安装开发锁，执行完整 pytest、全文件 AST、`/bin/bash -p -n`、ShellCheck 与离线 `check.sh`
 - CI job 与正式候选配方保留明确的 90 分钟上限，使实测接近 49 分钟且仍在增长的完整对抗套件、逐 task runtime 重验和环境准备不会被原 10/30 分钟边界误杀
 

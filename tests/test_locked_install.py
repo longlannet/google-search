@@ -98,14 +98,14 @@ def test_candidate_pip_directly_consumes_sealed_bytes_after_named_lock_replaceme
 
     candidate = tmp_path / '.venv-build.candidate'
     subprocess.run(
-        [sys.executable, '-I', '-m', 'venv', '--without-pip', str(candidate)],
+        [sys.executable, '-I', '-B', '-m', 'venv', '--without-pip', str(candidate)],
         check=True,
         capture_output=True,
         text=True,
     )
     bootstrap = tmp_path / 'bootstrap'
     subprocess.run(
-        [sys.executable, '-I', '-m', 'venv', str(bootstrap)],
+        [sys.executable, '-I', '-B', '-m', 'venv', str(bootstrap)],
         check=True,
         capture_output=True,
         text=True,
@@ -133,7 +133,13 @@ def test_candidate_pip_directly_consumes_sealed_bytes_after_named_lock_replaceme
     assert install.returncode == 0, install.stderr
 
     probe = subprocess.run(
-        [candidate / 'bin' / 'python', '-I', '-c', 'import sealed_demo; print(sealed_demo.VALUE)'],
+        [
+            candidate / 'bin' / 'python',
+            '-I',
+            '-B',
+            '-c',
+            'import sealed_demo; print(sealed_demo.VALUE)',
+        ],
         check=True,
         capture_output=True,
         text=True,

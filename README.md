@@ -195,7 +195,7 @@ OpenClaw frontmatter 将平台限定为 Linux，同时声明日常入口需要 `
 /bin/bash -p scripts/check.sh
 ```
 
-它运行完整 pytest、Python AST 解析、Bash 语法检查、ShellCheck（可用时）以及离线 parsing selfcheck。运行前需让所选 runtime 包含 `requirements-dev.txt`；最直接的方式是先执行 `install.sh --install-dev-dependencies`。CI 在 Python 3.10–3.14 上执行同类门禁，并使用哈希锁定的测试依赖。
+它运行完整 pytest、Python AST 解析、Bash 语法检查、ShellCheck（可用时）以及离线 parsing selfcheck。运行前需让所选 runtime 包含 `requirements-dev.txt`；最直接的方式是先执行 `install.sh --install-dev-dependencies`。CI 在 Python 3.10–3.14 上执行同类门禁，并使用哈希锁定的测试依赖。GitHub-hosted 矩阵只接受镜像内与目标 minor 版本匹配的唯一预装 patch runtime；workflow 会在固定 `setup-python` 执行前原位收紧其 tool-cache 树与祖先权限，并在 action 后精确复核所选路径，没有唯一候选时 fail closed。
 
 真实 API 诊断必须显式启用：
 
@@ -651,7 +651,7 @@ GOOGLE_SEARCH_RELEASE_RECIPE
 
 归档门禁拒绝已列明的敏感路径（例如 Serper 配置、常见 credential/private-key 文件名或后缀）、runtime/output/venv/cache/build 残留、非 UTF-8 内容、非占位的 `SERPER_API_KEY(S)` 赋值、已识别的私钥头标记、符号链接、硬链接、特殊文件、异常 mode 和非规范化属主信息；候选树的根目录与每级父目录也必须由当前 UID 所有、不可被组/其他用户写入且位于同一设备。这是有界的仓库策略，不是通用 secret scanner，无法识别任意命名或编码的秘密。生成 checksum、签名或 provenance 前仍须人工核对归档清单、内容与 commit。
 
-未来发布应同时提供：维护者签名的 annotated tag、发布资产的 SHA-256 校验和，以及可核验的构建来源证明（provenance；适用时再提供 SBOM）。CI 成功本身不等同于已签名发布。完整的 signed commit/tag、immutable draft、资产回验、attestation 和匿名公网下载步骤见 [`references/releasing.md`](./references/releasing.md)。
+未来发布应同时提供：维护者签名的 annotated tag、发布资产的 SHA-256 校验和，以及可核验的构建来源证明（provenance；适用时再提供 SBOM）。CI 成功本身不等同于已签名发布。完整的 signed commit/tag、immutable draft、资产回验、attestation、匿名 Latest REST 与固定版本/Latest 双路公网下载、原子 evidence 留存步骤见 [`references/releasing.md`](./references/releasing.md)；immutable 发布后若最终 evidence 落盘失败，已 fsync 的私有恢复文件必须保留并人工核验，不能删除或用重跑同版本发布替代。
 
 历史 tag 或 release 若缺少签名、校验和或 provenance，无法事后把原有对象变成当时已验证的发布；重新移动 tag 也不能补回这段信任链。使用者应优先选择带完整证据的新发布，并逐项验证。
 

@@ -8,6 +8,7 @@ unset variable
 unset GLIBC_TUNABLES GCONV_PATH
 unset PYTHONHOME PYTHONPATH PYTHONSTARTUP PYTHONINSPECT PYTHONUSERBASE
 unset PYTHONPLATLIBDIR PYTHONSAFEPATH PYTHONWARNINGS PYTHONBREAKPOINT
+unset PYTHONDONTWRITEBYTECODE PYTHONPYCACHEPREFIX
 unset VIRTUAL_ENV __PYVENV_LAUNCHER__
 export -n SHELLOPTS 2>/dev/null || true
 set -euo pipefail
@@ -193,7 +194,7 @@ select_runtime() {
   SELECTED_RUNTIME_TOKEN="$token"
   RUNNER_MODE=("--$selected_mode")
   if ! without_api_keys run_bound_task verify >/dev/null 2>&1; then
-    fail "the skill source tree or its parent chain changed during the check"
+    fail "the skill source tree, parent chain, or selected runtime changed during the check"
   fi
 }
 
@@ -206,6 +207,8 @@ run_pytest_protocol() (
       PYTEST_*) unset -v "$variable" 2>/dev/null || return 1 ;;
     esac
   done < <(compgen -e)
+  PYTHONDONTWRITEBYTECODE=1
+  export PYTHONDONTWRITEBYTECODE
   export PYTEST_DISABLE_PLUGIN_AUTOLOAD=1
   if [ -n "$RELEASE_ARCHIVE_ARG" ]; then
     GOOGLE_SEARCH_RELEASE_ARCHIVE="$RELEASE_ARCHIVE_ARG"
@@ -215,9 +218,9 @@ run_pytest_protocol() (
   capture_protocol run_bound_task check-pytest
 )
 
-assert_source_tree_unchanged() {
+assert_runtime_binding_unchanged() {
   without_api_keys run_bound_task verify >/dev/null 2>&1 || \
-    fail "the skill source tree or its parent chain changed during the check"
+    fail "the skill source tree, parent chain, or selected runtime changed during the check"
 }
 
 while [ "$#" -gt 0 ]; do
@@ -316,14 +319,14 @@ if [ "$ONLINE_SMOKE" -eq 1 ] || [ "$ONLINE_FULL" -eq 1 ]; then
     :
   else
     key_status=$?
-    assert_source_tree_unchanged
+    assert_runtime_binding_unchanged
     if [ "$key_status" -eq 2 ]; then
       fail "online checks require a valid Serper API key configuration" 2
     fi
     fail "online API key preflight failed"
   fi
   if [ "$KEY_RESULT" != "${KEYS_SENTINEL}"$'\n'"${PROTOCOL_CAPTURE_MARKER}" ]; then
-    assert_source_tree_unchanged
+    assert_runtime_binding_unchanged
     fail "online API key preflight returned an invalid sentinel"
   fi
 fi
@@ -342,7 +345,7 @@ fi
 
 log "checking Python AST parsing"
 if ! without_api_keys run_bound_task check-ast; then
-  assert_source_tree_unchanged
+  assert_runtime_binding_unchanged
   fail "Python AST parsing failed"
 fi
 
@@ -350,11 +353,11 @@ log "running formal pytest suite"
 if PYTEST_RESULT="$(run_pytest_protocol)"; then
   :
 else
-  assert_source_tree_unchanged
+  assert_runtime_binding_unchanged
   fail "pytest failed"
 fi
 if [ "$PYTEST_RESULT" != "${PYTEST_SENTINEL}"$'\n'"${PROTOCOL_CAPTURE_MARKER}" ]; then
-  assert_source_tree_unchanged
+  assert_runtime_binding_unchanged
   fail "pytest protocol returned an invalid sentinel"
 fi
 
@@ -372,11 +375,11 @@ validate_result_file() {
     run_bound_task check-result "$expected" "$path")"; then
     :
   else
-    assert_source_tree_unchanged
+    assert_runtime_binding_unchanged
     fail "$expected check returned an invalid result document"
   fi
   if [ "$validation_result" != "${expected_sentinel}"$'\n'"${PROTOCOL_CAPTURE_MARKER}" ]; then
-    assert_source_tree_unchanged
+    assert_runtime_binding_unchanged
     fail "$expected result validation returned an invalid sentinel"
   fi
 }
@@ -386,7 +389,7 @@ TEMP_RESULTS+=("$PARSING_RESULT")
 log "running offline parsing selfcheck"
 if ! (cd "$BASE_DIR" && without_api_keys \
   run_bound_task parsing >"$PARSING_RESULT"); then
-  assert_source_tree_unchanged
+  assert_runtime_binding_unchanged
   fail "offline parsing selfcheck failed"
 fi
 validate_result_file parsing "$PARSING_RESULT"
@@ -396,7 +399,7 @@ if [ "$ONLINE_SMOKE" -eq 1 ]; then
   TEMP_RESULTS+=("$ONLINE_RESULT")
   log "running explicit online smoke test"
   if ! (cd "$BASE_DIR" && run_bound_task smoke >"$ONLINE_RESULT"); then
-    assert_source_tree_unchanged
+    assert_runtime_binding_unchanged
     fail "online smoke test failed"
   fi
   validate_result_file smoke "$ONLINE_RESULT"
@@ -407,11 +410,11 @@ if [ "$ONLINE_FULL" -eq 1 ]; then
   TEMP_RESULTS+=("$ONLINE_RESULT")
   log "running explicit online full selfcheck"
   if ! (cd "$BASE_DIR" && run_bound_task full >"$ONLINE_RESULT"); then
-    assert_source_tree_unchanged
+    assert_runtime_binding_unchanged
     fail "online full selfcheck failed"
   fi
   validate_result_file full "$ONLINE_RESULT"
 fi
 
-assert_source_tree_unchanged
+assert_runtime_binding_unchanged
 log "check complete (offline=$((1 - (ONLINE_SMOKE || ONLINE_FULL))))"

@@ -1,3 +1,4 @@
+import hashlib
 import io
 import json
 import os
@@ -142,6 +143,32 @@ REPRESENTATIVE_GENERATED_FILES = (
     'dist/google-search.tar.gz',
     'google_search.egg-info/PKG-INFO',
 )
+
+
+def _extract_release_function(runbook, name):
+    match = re.search(
+        rf'(?ms)^{re.escape(name)}\(\) \{{\n.*?^\}}\n',
+        runbook,
+    )
+    assert match is not None, f'missing release helper: {name}'
+    return match.group(0)
+
+
+def _release_shell_prelude(runbook):
+    return (
+        'CURRENT_UID="$(id -u)"\n'
+        + _extract_release_function(runbook, 'command_output_is_exact')
+    )
+
+
+def _release_git_helpers(runbook, *, remote=False):
+    names = ['assert_git_local_config_safe', 'trusted_git']
+    if remote:
+        names.extend(('trusted_remote_git', 'assert_git_transport_config_safe'))
+    return '\n'.join(
+        [_release_shell_prelude(runbook)]
+        + [_extract_release_function(runbook, name) for name in names]
+    )
 
 
 def _git_binary():
@@ -1254,15 +1281,49 @@ def test_openclaw_metadata_declares_every_daily_entrypoint_binary():
 def test_ci_runs_the_complete_gate_with_the_matrix_local_venv():
     workflow = (ROOT / '.github/workflows/test.yml').read_text(encoding='utf-8')
     assert 'timeout-minutes: 90' in workflow
-    assert 'python -m venv --without-pip .venv' in workflow
-    assert 'python -m venv "$RUNNER_TEMP/google-search-bootstrap"' in workflow
+    assert 'AGENT_TOOLSDIRECTORY' not in workflow
+    assert 'RUNNER_TOOL_CACHE' not in workflow
+    assert 'PYTHON_SERIES: ${{ matrix.python-version }}' in workflow
+    assert 'candidates=(/opt/hostedtoolcache/Python/"$python_series".*/x64)' in workflow
+    assert 'test "${#candidates[@]}" -eq 1' in workflow
+    assert workflow.count('cache_marker="${python_location}.complete"') == 2
+    assert workflow.count('test ! -L "$cache_marker"') == 3
+    assert workflow.count('test "$(/usr/bin/stat -c \'%h\' -- "$cache_marker")" -eq 1') == 3
+    assert 'python_location="${pythonLocation:?}"' in workflow
+    assert '^/opt/hostedtoolcache/Python/3\\.(10|11|12|13|14)\\.[0-9]+/x64$' in workflow
+    assert '/usr/bin/sudo --non-interactive -- /usr/bin/chmod go-w --' in workflow
+    assert '/usr/bin/sudo --non-interactive -- /usr/bin/chmod -R go-w -- "$version_dir"' in workflow
+    assert '/ /opt /opt/hostedtoolcache /opt/hostedtoolcache/Python' in workflow
+    assert '\\( -type f -o -type d \\) -perm /022 -print -quit' in workflow
+    assert '! \\( -uid 0 -o -uid "$current_uid" \\) -print -quit' in workflow
+    assert '\\( ! -type f -a ! -type d -a ! -type l \\) -print -quit' in workflow
+    assert workflow.count('finding="$(/usr/bin/find -P "$version_dir" \\') == 6
+    assert 'find -P "$version_dir" -xdev' not in workflow
+    assert workflow.count(')" || exit 1\n          test -z "$finding"') == 8
+    assert 'python_target="$(/usr/bin/readlink -f -- "$python_location/bin/python")"' in workflow
+    assert 'test "$python_target" = "$python_location/bin/python$python_series"' in workflow
+    assert '"$python_location"/bin/python3.*' not in workflow
+    assert 'test ! -L "$python_target"' in workflow
+    assert workflow.count('test $((8#$mode & 06000)) -eq 0') == 4
+    assert workflow.count('test "$(/usr/bin/stat -c \'%h\' -- "$python_target")" -eq 1') == 2
+    assert "printf 'EXPECTED_PYTHON_LOCATION=%s\\n' \"$python_location\"" in workflow
+    assert "printf 'EXPECTED_PYTHON_TARGET=%s\\n' \"$python_target\"" in workflow
+    assert 'check-latest: false' in workflow
+    assert 'expected_location="${EXPECTED_PYTHON_LOCATION:?}"' in workflow
+    assert 'expected_target="${EXPECTED_PYTHON_TARGET:?}"' in workflow
+    assert 'test "$python_location" = "$expected_location"' in workflow
+    assert 'test "$python_target" = "$expected_target"' in workflow
+    assert 'test "$(/usr/bin/readlink -f -- "$(command -v python)")" = "$python_target"' in workflow
+    assert '"$python_location/bin/python" -m venv --without-pip .venv' in workflow
+    assert '"$python_location/bin/python" -m venv "$RUNNER_TEMP/google-search-bootstrap"' in workflow
     assert '-m pip --isolated --python "$PWD/.venv/bin/python"' in workflow
     assert 'importlib.util.find_spec("pip") is None' in workflow
     assert 'importlib.util.find_spec("setuptools") is None' in workflow
-    assert 'find .venv/lib -type f -name \'*.pth\'' in workflow
+    assert "/usr/bin/find -P .venv/lib -type f -name '*.pth' -print -quit" in workflow
+    assert '/usr/bin/find -P .venv/lib -path \'*/site-packages/*\'' in workflow
     assert "-name 'pip-*.dist-info'" in workflow
     assert '.venv/bin/python -I -S -c' in workflow
-    assert workflow.index("find .venv/lib -type f -name '*.pth'") < workflow.index(
+    assert workflow.index("/usr/bin/find -P .venv/lib -type f -name '*.pth'") < workflow.index(
         '.venv/bin/python -I -S -c'
     )
     assert '.venv/bin/python -m pip' not in workflow
@@ -1279,6 +1340,65 @@ def test_ci_runs_the_complete_gate_with_the_matrix_local_venv():
     assert '/usr/bin/shellcheck' not in workflow
     assert 'run: /bin/bash -p scripts/check.sh --venv' in workflow
     assert 'run: python -m pytest' not in workflow
+    shellcheck_gate_start = workflow.index(
+        '      - name: Require the pinned ShellCheck gate\n'
+    )
+    offline_gate_start = workflow.index(
+        '      - name: Run offline project check\n', shellcheck_gate_start
+    )
+    shellcheck_gate = workflow[shellcheck_gate_start:offline_gate_start]
+    strict_gate_prefix = (
+        '        run: |\n'
+        '          set -euo pipefail\n'
+        '          pinned_shellcheck="$RUNNER_TEMP/shellcheck-bin/shellcheck"\n'
+    )
+    assert strict_gate_prefix in shellcheck_gate
+    assert shellcheck_gate.index('set -euo pipefail') < shellcheck_gate.index(
+        'pinned_shellcheck='
+    ) < shellcheck_gate.index('"$pinned_shellcheck" --norc -x scripts/*.sh')
+    venv_step_start = workflow.index(
+        '      - name: Verify selected Python runtime and create venvs\n'
+    )
+    dependency_step_start = workflow.index(
+        '      - name: Install locked test dependencies\n', venv_step_start
+    )
+    shellcheck_install_start = workflow.index(
+        '      - name: Install pinned ShellCheck\n', dependency_step_start
+    )
+    venv_step = workflow[venv_step_start:dependency_step_start]
+    dependency_step = workflow[dependency_step_start:shellcheck_install_start]
+    assert (
+        '        run: |\n'
+        '          set -euo pipefail\n'
+        '          umask 077\n'
+    ) in venv_step
+    assert venv_step.index('set -euo pipefail') < venv_step.index('umask 077') < (
+        venv_step.index('"$python_location/bin/python" -m venv --without-pip .venv')
+    )
+    assert (
+        '        run: |\n'
+        '          set -euo pipefail\n'
+        '          umask 077\n'
+        '          bootstrap_python="$RUNNER_TEMP/google-search-bootstrap/bin/python"\n'
+    ) in dependency_step
+    assert dependency_step.index('set -euo pipefail') < dependency_step.index(
+        'umask 077'
+    ) < dependency_step.index('-m pip --isolated')
+    assert workflow.index('Harden the preinstalled matrix Python runtime') < workflow.index(
+        'uses: actions/setup-python@'
+    )
+    assert workflow.index('/usr/bin/sudo --non-interactive -- /usr/bin/chmod') < workflow.index(
+        'uses: actions/setup-python@'
+    )
+    assert workflow.index("printf 'EXPECTED_PYTHON_LOCATION=%s\\n'") < workflow.index(
+        'uses: actions/setup-python@'
+    )
+    assert workflow.index('uses: actions/setup-python@') < workflow.index(
+        'Verify selected Python runtime and create venvs'
+    )
+    assert workflow.index('Verify selected Python runtime and create venvs') < workflow.index(
+        '"$python_location/bin/python" -m venv --without-pip .venv'
+    )
 
 
 def test_release_recipe_is_private_bounded_and_uses_the_clean_committed_gate():
@@ -1642,6 +1762,7 @@ def test_release_runbook_requires_signed_immutable_verified_publication():
     runbook = (ROOT / 'references/releasing.md').read_text(encoding='utf-8')
     required_fragments = (
         'C678256ACBFC6491BF5076655F3AE24999921FFC',
+        'AUTHORITATIVE_KEY_URL=https://github.com/xxvcc.gpg',
         '/usr/bin/env -i',
         '/bin/bash --noprofile --norc -p',
         'PATH=/usr/bin:/bin',
@@ -1688,12 +1809,20 @@ def test_release_runbook_requires_signed_immutable_verified_publication():
         'git verify-tag --raw',
         'refs/tags/$VERSION:refs/tags/$VERSION',
         'timeout-minutes',
-        'PUBLICATION_LOCK_TARGET=',
+        'PUBLICATION_LOCK_TARGET=/tmp/google-search.publication.lock',
         'PUBLICATION_LOCK=',
+        'GH_AUTH_LOCK_TARGET=/tmp/github-gh-auth.publication.lock',
+        'GH_AUTH_LOCK=',
+        'BOOTSTRAP_RELEASE_CHECKOUT=',
+        'bootstrap_release_checkout_is_safe',
+        'cleanup_bootstrap_release_checkout',
+        'trap cleanup_bootstrap_release_checkout EXIT',
+        'find -P "$BOOTSTRAP_RELEASE_CHECKOUT" -xdev -depth -delete',
         'mkdir -m 700 -- "$PUBLICATION_LOCK_TARGET"',
+        'mkdir -m 700 -- "$GH_AUTH_LOCK_TARGET"',
         'unset SERPER_API_KEY SERPER_API_KEYS SERPER_DEBUG_RR TAR_OPTIONS',
         'release_tmp_directory_is_safe /tmp',
-        "[ \"$(stat -c '%u:%a' -- \"$directory\")\" = '0:1777' ]",
+        "command_output_is_exact '0:1777' stat -c '%u:%a' -- \"$directory\"",
         'git remote get-url origin',
         'trusted_git status --porcelain=v1 --untracked-files=all',
         'trusted_git diff --cached --check --no-ext-diff --no-textconv',
@@ -1706,7 +1835,8 @@ def test_release_runbook_requires_signed_immutable_verified_publication():
         'repos/$REPOSITORY/immutable-releases',
         '--draft --verify-tag',
         'SHA256SUMS.asc',
-        'gh release download',
+        'download_release_assets_by_id_once',
+        'repos/$REPOSITORY/releases/assets/$asset_id',
         'cmp --',
         'sha256sum --check --strict',
         'gpg --batch --status-fd=1 --verify',
@@ -1718,6 +1848,11 @@ def test_release_runbook_requires_signed_immutable_verified_publication():
         'assert_tag_name_unclaimed',
         'assert_release_name_unclaimed',
         'assert_publication_preconditions',
+        'push_main_with_reconciliation',
+        'push_tag_with_reconciliation',
+        'create_draft_with_reconciliation',
+        'upload_asset_with_reconciliation',
+        'publish_release_with_reconciliation',
         '跨主机独占 publication window',
         '直到 immutable 终验完成',
         'draft notes/assets',
@@ -1725,26 +1860,40 @@ def test_release_runbook_requires_signed_immutable_verified_publication():
         'stop_private_gpg_agent',
         '/usr/bin/gpgconf --homedir "$directory" --kill all',
         '/usr/bin/gpgconf --homedir "$directory" --remove-socketdir',
-        '签名者当前权威渠道',
+        '签名者权威 HTTPS',
         '不得使用历史缓存、旧导出',
         '历史缓存或旧导出即使 fingerprint 相同也不能证明当前未撤销',
         "trusted_git config --get-regexp '^http\\.'",
         'trusted_git rev-parse --absolute-git-dir',
         'trusted_git rev-parse --path-format=absolute --git-common-dir',
-        '[ "$(trusted_git symbolic-ref --quiet --short HEAD)" = main ]',
+        'command_output_is_exact main trusted_git symbolic-ref --quiet --short HEAD',
         'gh api --include "repos/$REPOSITORY/releases/tags/$VERSION"',
         '[ "$http_status" = 404 ]',
         '.author.login',
         "--template '{{.body}}'",
         'env -i PATH=/usr/bin:/bin /usr/bin/curl -q',
+        'https://api.github.com/repos/$REPOSITORY/releases/latest',
+        'https://github.com/$REPOSITORY/releases/latest/download/$name',
+        'anonymous_latest_release_id',
+        'asset.get(\'digest\')',
+        'release_rest_id=%s',
+        'release_database_id=%s',
+        'asset_SHA256SUMS_sha256=%s',
+        'asset_SHA256SUMS.asc_sha256=%s',
+        'complete=true',
     )
     for fragment in required_fragments:
         assert fragment in runbook
     assert '--force' not in runbook
     assert '+refs/tags' not in runbook
+    assert '--clobber' not in '\n'.join(
+        line for line in runbook.splitlines() if not line.startswith('发布账号与 admin')
+    )
     assert '-F enabled=true' not in runbook
     assert '! git show-ref' not in runbook
     assert 'local run_id= deadline=' not in runbook
+    assert 'MAIN_RUN_ID="$(wait_for_matrix_run' not in runbook
+    assert 'TAG_RUN_ID="$(wait_for_matrix_run' not in runbook
     assert '--json body --jq .body' not in runbook
     assert 'gpg_status_is_acceptable' in runbook
     assert 'valid == 1 && forbidden == 0 && invalid == 0' in runbook
@@ -1754,10 +1903,12 @@ def test_release_runbook_requires_signed_immutable_verified_publication():
     assert 'GNUPGHOME="$FRESH_KEYRING" trusted_git verify-tag --raw' in runbook
     assert 'verify_git_commit_signature "$COMMIT"' in runbook
     assert 'verify_git_tag_signature "$VERSION"' in runbook
-    assert runbook.count('verify_checksum_signature "$') == 3
-    assert 'IMPORTED_PRIMARY_FINGERPRINTS' in runbook
+    assert runbook.count('verify_checksum_signature "$') == 5
+    assert 'imported_primary_fingerprints' in runbook
     assert '/tmp/google-search-release.????????' not in runbook
-    assert 'if [ "$PUBLICATION_LOCK" = "$PUBLICATION_LOCK_TARGET" ]; then' in runbook
+    assert '[ "$PUBLICATION_LOCK" = "$PUBLICATION_LOCK_TARGET" ] && \\\n' in runbook
+    assert '[[ "$PUBLICATION_LOCK_IDENTITY" =~ ^[0-9]+:[0-9]+$ ]]' in runbook
+    assert "stat -c '%d:%i' -- \"$PUBLICATION_LOCK\"" in runbook
     assert '[ "$PUBLICATION_LOCK" = "$PUBLICATION_LOCK_TARGET" ] || exit 1' not in runbook
     local_guard = runbook.index('assert_git_local_config_safe() {')
     trusted_git = runbook.index('trusted_git() {')
@@ -1771,29 +1922,61 @@ def test_release_runbook_requires_signed_immutable_verified_publication():
     assert 'gh auth switch --hostname github.com --user "$ORIGINAL_GH_ACCOUNT"' in runbook
     lock_mkdir = 'mkdir -m 700 -- "$PUBLICATION_LOCK_TARGET"'
     lock_claim = 'PUBLICATION_LOCK="$PUBLICATION_LOCK_TARGET"'
-    assert runbook.index('trap cleanup_release_state EXIT') < runbook.index(lock_mkdir)
+    gh_lock_mkdir = 'mkdir -m 700 -- "$GH_AUTH_LOCK_TARGET"'
+    gh_lock_claim = 'GH_AUTH_LOCK="$GH_AUTH_LOCK_TARGET"'
+    bootstrap_claim = 'BOOTSTRAP_RELEASE_CHECKOUT="$(pwd -P)"'
+    bootstrap_trap = 'trap cleanup_bootstrap_release_checkout EXIT'
+    release_checkout_claim = 'RELEASE_CHECKOUT="$REPOSITORY_ROOT"'
+    full_cleanup_trap = 'trap cleanup_release_state EXIT'
+    bootstrap_clear = '\nBOOTSTRAP_RELEASE_CHECKOUT=\n'
+    assert runbook.index(bootstrap_claim) < runbook.index(bootstrap_trap)
+    assert runbook.index(bootstrap_trap) < runbook.index(release_checkout_claim)
+    assert runbook.index(release_checkout_claim) < runbook.index(full_cleanup_trap)
+    assert runbook.index(full_cleanup_trap) < runbook.index(
+        bootstrap_clear, runbook.index(full_cleanup_trap)
+    )
+    assert runbook.index(full_cleanup_trap) < runbook.index(lock_mkdir)
     assert runbook.index("trap '' HUP INT TERM") < runbook.index(lock_mkdir)
     assert runbook.index(lock_mkdir) < runbook.index(lock_claim)
-    assert runbook.index(lock_claim) < runbook.index("trap 'exit 129' HUP", runbook.index(lock_claim))
+    assert runbook.index(lock_claim) < runbook.index(gh_lock_mkdir)
+    assert runbook.index(gh_lock_mkdir) < runbook.index(gh_lock_claim)
+    assert runbook.index(gh_lock_claim) < runbook.index(
+        "set_release_signal_traps", runbook.index(gh_lock_claim)
+    )
     assert '[ ! -e "$directory" ] && [ ! -L "$directory" ] || return 1' in runbook
     first_push = runbook.index(
-        'trusted_remote_git push --atomic --no-follow-tags --signed=no --recurse-submodules=no'
+        'trusted_remote_git push --atomic --no-follow-tags --signed=no \\\n'
+        '    --recurse-submodules=no'
     )
     fresh_key_import = runbook.index(
-        'GNUPGHOME="$FRESH_KEYRING" /usr/bin/gpg --batch --import "$TRUSTED_PUBLIC_KEY"'
+        'GNUPGHOME="$FRESH_KEYRING" /usr/bin/gpg --batch --import "$key_file"'
     )
     signed_commit = runbook.index(
         'trusted_git commit -S"$SIGNING_FINGERPRINT" -m "release: google-search ${VERSION}"'
     )
-    assert fresh_key_import < signed_commit < runbook.index(
-        'verify_git_commit_signature "$COMMIT"'
-    ) < first_push
+    refresh_calls = [
+        match.start()
+        for match in re.finditer(r'^refresh_authoritative_keyring$', runbook, re.MULTILINE)
+    ]
+    assert len(refresh_calls) == 3
+    assert fresh_key_import < refresh_calls[0] < signed_commit
+    commit_verifications = [
+        match.start()
+        for match in re.finditer(
+            r'^verify_git_commit_signature "\$COMMIT"$', runbook, re.MULTILINE
+        )
+    ]
+    assert len(commit_verifications) == 3
+    assert signed_commit < commit_verifications[0] < first_push
     first_tag_check = runbook.index('\nassert_tag_name_unclaimed\n')
     first_release_check = runbook.index('\nassert_release_name_unclaimed\n')
     account_switch = runbook.index('gh auth switch --hostname github.com --user longlannet')
     assert account_switch < first_tag_check < first_release_check < first_push
     assert runbook.count('\nassert_tag_name_unclaimed\n') == 2
-    assert runbook.count('\nassert_release_name_unclaimed\n') == 4
+    assert runbook.count('\nassert_release_name_unclaimed\n') == 2
+    assert runbook.count(
+        '\nretry_post_publish_read_only assert_release_name_unclaimed\n'
+    ) == 2
     assert runbook.index(
         '\nassert_tag_name_unclaimed\nassert_release_name_unclaimed\ntrusted_git tag -s'
     ) > first_push
@@ -1811,51 +1994,1924 @@ def test_release_runbook_requires_signed_immutable_verified_publication():
     assert '[ "$REMOTE_TAG_COMMIT" = "$COMMIT" ]' in runbook
     assert '[ "$REMOTE_MAIN_BEFORE_TAG" = "$COMMIT" ]' in runbook
     assert runbook.count(
-        'trusted_remote_git push --atomic --no-follow-tags --signed=no --recurse-submodules=no'
+        'trusted_remote_git push --atomic --no-follow-tags --signed=no \\\n'
+        '    --recurse-submodules=no'
     ) == 2
     immutable_put = 'gh api --method PUT "repos/$REPOSITORY/immutable-releases" >/dev/null'
     draft_create = 'gh release create "$VERSION"'
-    draft_download = 'gh release download "$VERSION"'
-    publish = 'gh release edit "$VERSION"'
-    assert runbook.index(immutable_put) < runbook.index(draft_create)
-    assert runbook.index(
-        'assert_release_name_unclaimed\ngh api --method PUT'
-    ) < runbook.index(immutable_put)
-    assert runbook.index(
-        'assert_release_name_unclaimed\ngh release create'
-    ) < runbook.index(draft_create)
-    assert runbook.index('--draft --verify-tag') < runbook.index(draft_download)
-    post_download = runbook[runbook.index(draft_download):]
-    assert post_download.index('cmp -- "$STAGE/$ASSET" "$VERIFY/$ASSET"') < post_download.index(
-        'sha256sum --check --strict SHA256SUMS'
+    draft_download = (
+        'VERIFIED_ASSETS="$(retry_post_publish_read_only \\\n'
+        '  download_release_assets_by_id_once)"'
     )
+    draft_create_call = '\ncreate_draft_with_reconciliation\n'
+    publish_call = '\npublish_release_with_reconciliation\n'
+    tag_assignment = 'TAG_RUN_ID="$MATRIX_RUN_ID"'
+    signed_tag = 'trusted_git tag -s -u "$SIGNING_FINGERPRINT"'
+    assert refresh_calls[0] < signed_commit < refresh_calls[1] < runbook.index(signed_tag)
+    assert runbook.index(tag_assignment) < refresh_calls[2] < runbook.index(immutable_put)
+    assert refresh_calls[2] < commit_verifications[2] < runbook.index(immutable_put)
+    third_refresh_tail = runbook[refresh_calls[2]:runbook.index(immutable_put)]
+    assert 'verify_git_tag_signature "$VERSION"' in third_refresh_tail
+    assert 'verify_checksum_signature "$STAGE"' in third_refresh_tail
+    assert runbook.index(immutable_put) < runbook.index(draft_create_call)
+    retried_release_checks = [
+        match.start()
+        for match in re.finditer(
+            r'^retry_post_publish_read_only assert_release_name_unclaimed$',
+            runbook,
+            re.MULTILINE,
+        )
+    ]
+    assert retried_release_checks[0] < runbook.index(immutable_put)
+    assert retried_release_checks[1] < runbook.index(draft_create_call)
+    create_command = runbook[runbook.index(draft_create):runbook.index('; then', runbook.index(draft_create))]
+    assert '--draft --verify-tag' in create_command
+    assert '$STAGE/' not in create_command
+    upload_call = runbook.index('upload_asset_with_reconciliation "$STAGE/$name"')
+    final_draft_download = runbook.index(draft_download, upload_call)
+    assert runbook.index(draft_create_call) < upload_call < final_draft_download
+    download_helper = _extract_release_function(runbook, 'download_release_assets_by_id_once')
+    rest_download = '"repos/$REPOSITORY/releases/assets/$asset_id"'
+    assert download_helper.index(rest_download) < download_helper.index(
+        'cmp -- "$STAGE/$name" "$destination"'
+    )
+    assert download_helper.index('manifest_before=') < download_helper.index(rest_download)
+    assert download_helper.index(rest_download) < download_helper.index('manifest_after=')
+    post_download = runbook[final_draft_download:]
     assert post_download.index('sha256sum --check --strict SHA256SUMS') < post_download.index(
-        'verify_checksum_signature "$VERIFY"'
+        'verify_checksum_signature "$VERIFIED_ASSETS"'
     )
     precondition_calls = [
         match.start()
-        for match in re.finditer(r'^assert_publication_preconditions$', runbook, re.MULTILINE)
+        for match in re.finditer(
+            r'^retry_post_publish_read_only assert_publication_preconditions$',
+            runbook,
+            re.MULTILINE,
+        )
     ]
-    assert len(precondition_calls) == 4
+    assert len(precondition_calls) == 5
     assert precondition_calls[0] < runbook.index(immutable_put)
-    assert runbook.index(immutable_put) < precondition_calls[1] < runbook.index(draft_create)
-    assert runbook.index(draft_download) < precondition_calls[2] < runbook.index(publish)
-    assert runbook.index(publish) < precondition_calls[3]
-    assert runbook.index(publish) < runbook.index('isDraft,isPrerelease,isImmutable')
-    postpublish = runbook[runbook.index(publish):]
-    assert 'assert_release_identity' in postpublish
+    assert runbook.index(immutable_put) < precondition_calls[1] < runbook.index(draft_create_call)
+    assert final_draft_download < precondition_calls[2] < runbook.index(publish_call)
+    assert runbook.index(publish_call) < precondition_calls[3] < precondition_calls[4]
+    assert runbook.index('isDraft,isPrerelease,isImmutable') < runbook.index(publish_call)
+    postpublish = runbook[runbook.index(publish_call):]
+    assert 'assert_published_release_state' in postpublish
     assert 'assert_publication_preconditions' in postpublish
     assert runbook.index('gh release verify-asset') < runbook.index(
-        'env -i PATH=/usr/bin:/bin /usr/bin/curl -q'
+        'env -i PATH=/usr/bin:/bin LC_ALL=C /usr/bin/curl -q'
     )
-    assert runbook.index('cmp -- "$VERIFY/$name" "$PUBLIC/$name"') > runbook.index(publish)
-    assert 'rmdir -- "$PUBLICATION_LOCK"' in runbook
-    assert runbook.index('stop_private_gpg_agent "$FRESH_KEYRING"') < runbook.index(
-        'for directory in "$PUBLIC" "$VERIFY" "$STAGE" "$FRESH_KEYRING"'
+    assert runbook.index('cmp -- "$VERIFIED_ASSETS/$name" "$destination"') > runbook.index(
+        publish_call
     )
-    assert runbook.rindex('GH_ACCOUNT_SWITCHED=0') > runbook.index(
-        'env -i PATH=/usr/bin:/bin /usr/bin/curl -q'
+    anonymous_api = 'https://api.github.com/repos/$REPOSITORY/releases/latest'
+    latest_download_call = (
+        'download_public_asset_once latest "$name" "$PUBLIC/latest/$name"'
     )
+    evidence_prepare = '\nprepare_incomplete_release_evidence\n'
+    evidence_finalize = '\nfinalize_completed_release_evidence\n'
+    assert runbook.index(publish_call) < runbook.index(anonymous_api) < runbook.index(
+        latest_download_call
+    )
+    assert runbook.index(latest_download_call) < runbook.index(evidence_prepare)
+    assert runbook.index('gh release verify-asset') < runbook.index(evidence_prepare)
+    assert runbook.index('verify_checksum_signature "$PUBLIC/latest"') < runbook.index(
+        evidence_prepare
+    )
+    assert runbook.index('RELEASE_DATABASE_ID=') < runbook.index(publish_call)
+    assert runbook.index('RELEASE_REST_ID=') < runbook.index(publish_call)
+    finalize_evidence_helper = _extract_release_function(
+        runbook, 'finalize_completed_release_evidence'
+    )
+    assert finalize_evidence_helper.index("printf 'complete=true\\n'") < (
+        finalize_evidence_helper.index('atomic_publish_completed_evidence')
+    )
+    assert runbook.index(evidence_prepare) < runbook.index(evidence_finalize)
+    audited_candidate = 'AUDITED_DIRECTORY_CANDIDATE="${AUDITED_ARCHIVE%/*}"'
+    audited_registration = 'AUDITED_DIRECTORY="$AUDITED_DIRECTORY_CANDIDATE"'
+    archive_file_check = '[ -f "$AUDITED_ARCHIVE" ] && [ ! -L "$AUDITED_ARCHIVE" ]'
+    assert runbook.index(audited_candidate) < runbook.index(audited_registration)
+    assert runbook.index(audited_registration) < runbook.index(archive_file_check)
+    cleanup_helper = _extract_release_function(runbook, 'cleanup_release_state')
+    assert cleanup_helper.index('stop_private_gpg_agent "$FRESH_KEYRING"') < (
+        cleanup_helper.index('for directory in')
+    )
+    assert 'recoverable release evidence preserved:' in cleanup_helper
+    final_account_restore = runbook.rindex(
+        'gh auth switch --hostname github.com --user "$ORIGINAL_GH_ACCOUNT"'
+    )
+    final_gh_unlock = runbook.rindex('rmdir -- "$GH_AUTH_LOCK"')
+    final_repo_unlock = runbook.rindex('rmdir -- "$PUBLICATION_LOCK"')
+    assert runbook.index(evidence_prepare) < final_account_restore < final_gh_unlock < final_repo_unlock
+    assert final_repo_unlock < runbook.index(evidence_finalize)
+    assert runbook.rindex('GH_ACCOUNT_SWITCHED=0') > runbook.index(latest_download_call)
+
+
+@pytest.mark.parametrize(
+    ('output', 'status', 'expected_success'),
+    (
+        ('exact', 0, True),
+        ('exact', 9, False),
+        ('different', 0, False),
+    ),
+)
+def test_release_command_output_is_exact_requires_matching_stdout_and_zero_status(
+    output,
+    status,
+    expected_success,
+):
+    runbook = (ROOT / 'references/releasing.md').read_text(encoding='utf-8')
+    helper = _extract_release_function(runbook, 'command_output_is_exact')
+    script = f'''{helper}
+probe() {{
+  printf '%s\\n' "$PROBE_OUTPUT"
+  return "$PROBE_STATUS"
+}}
+command_output_is_exact exact probe || exit $?
+printf 'accepted\\n'
+'''
+    result = subprocess.run(
+        ['/bin/bash', '--noprofile', '--norc', '-p', '-c', script],
+        env={
+            **os.environ,
+            'PROBE_OUTPUT': output,
+            'PROBE_STATUS': str(status),
+        },
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert (result.returncode == 0) is expected_success, result.stderr
+    assert result.stdout == ('accepted\n' if expected_success else '')
+
+
+@pytest.mark.parametrize(
+    ('initial_status', 'mode', 'expected_status', 'expected_removed'),
+    (
+        (0, 0o700, 0, True),
+        (9, 0o700, 9, True),
+        (0, 0o750, 1, False),
+    ),
+)
+def test_release_bootstrap_cleanup_covers_failures_before_full_cleanup_trap(
+    initial_status,
+    mode,
+    expected_status,
+    expected_removed,
+):
+    runbook = (ROOT / 'references/releasing.md').read_text(encoding='utf-8')
+    helpers = '\n'.join(
+        [_release_shell_prelude(runbook)]
+        + [
+            _extract_release_function(runbook, name)
+            for name in (
+                'bootstrap_release_checkout_is_safe',
+                'cleanup_bootstrap_release_checkout',
+            )
+        ]
+    )
+    checkout = Path(subprocess.run(
+        ['/usr/bin/mktemp', '-d', '/tmp/google-search-release-checkout.XXXXXXXX'],
+        text=True,
+        capture_output=True,
+        check=True,
+    ).stdout.strip())
+    try:
+        nested = checkout / 'nested'
+        nested.mkdir(mode=0o700)
+        (nested / 'payload').write_bytes(b'release checkout\n')
+        checkout.chmod(mode)
+        script = f'''{helpers}
+BOOTSTRAP_RELEASE_CHECKOUT="$1"
+trap cleanup_bootstrap_release_checkout EXIT
+exit "$2"
+'''
+        result = subprocess.run(
+            ['/bin/bash', '--noprofile', '--norc', '-p', '-c', script, '_',
+             os.fspath(checkout), str(initial_status)],
+            cwd=checkout,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+
+        assert result.returncode == expected_status, (result.stdout, result.stderr)
+        assert (not checkout.exists()) is expected_removed
+    finally:
+        if checkout.exists():
+            checkout.chmod(0o700)
+            shutil.rmtree(checkout)
+
+
+@pytest.mark.parametrize(
+    ('scenario', 'expected_success', 'watch_expected'),
+    (
+        ('success', True, True),
+        ('watch-failure', False, True),
+        ('sha-mismatch', False, True),
+        ('branch-mismatch', False, True),
+        ('workflow-mismatch', False, True),
+        ('jobs-mismatch', False, True),
+        ('poll-timeout', False, False),
+    ),
+)
+def test_release_matrix_wait_is_fail_closed_and_never_leaks_a_failed_run_id(
+    tmp_path,
+    scenario,
+    expected_success,
+    watch_expected,
+):
+    runbook = (ROOT / 'references/releasing.md').read_text(encoding='utf-8')
+    assert_matrix = _extract_release_function(runbook, 'assert_matrix_run_id')
+    watch_matrix = _extract_release_function(runbook, 'watch_matrix_run')
+    assert watch_matrix.count('/usr/bin/gh run watch') == 1
+    watch_matrix = watch_matrix.replace(
+        '/usr/bin/gh run watch',
+        '"${WATCH_GH:?}" run watch',
+    )
+    wait_matrix = _extract_release_function(runbook, 'wait_for_matrix_run')
+    helpers = f'{assert_matrix}\n{watch_matrix}\n{wait_matrix}'
+    commit = 'a' * 40
+    metadata = f'424242|{commit}|main|push|completed|success|244105293|test'
+    jobs = '\n'.join(f'Python {version}|completed|success' for version in (
+        '3.10', '3.11', '3.12', '3.13', '3.14'
+    ))
+    list_value = '424242'
+    watch_status = '0'
+    if scenario == 'watch-failure':
+        watch_status = '7'
+    elif scenario == 'sha-mismatch':
+        metadata = metadata.replace(commit, 'b' * 40)
+    elif scenario == 'branch-mismatch':
+        metadata = metadata.replace('|main|push|', '|v2.0.0|push|')
+    elif scenario == 'workflow-mismatch':
+        metadata = metadata.replace('|244105293|test', '|244105294|test')
+    elif scenario == 'jobs-mismatch':
+        jobs = jobs.replace('Python 3.14|completed|success', 'Python 3.14|completed|failure')
+    elif scenario == 'poll-timeout':
+        list_value = ''
+    watch_marker = tmp_path / 'watch-called'
+    watch_program = tmp_path / 'gh-watch'
+    watch_program.write_text(
+        '#!/bin/sh\n'
+        'printf "called\\n" >>"${WATCH_MARKER:?}"\n'
+        'exit "${WATCH_STATUS:?}"\n',
+        encoding='utf-8',
+    )
+    watch_program.chmod(0o700)
+    script = f'''{helpers}
+gh() {{
+  case "$1:$2" in
+    run:list) printf '%s\\n' "$LIST_VALUE" ;;
+    run:view)
+      case " $* " in
+        *' --json jobs '*) printf '%s\\n' "$JOBS" ;;
+        *) printf '%s\\n' "$METADATA" ;;
+      esac
+      ;;
+    *) return 97 ;;
+  esac
+}}
+REPOSITORY=longlannet/google-search
+VERSION=v2.0.0
+COMMIT={commit}
+TEST_WORKFLOW_DATABASE_ID=244105293
+MATRIX_RUN_DISCOVERY_TIMEOUT_SECONDS=0
+MATRIX_RUN_POLL_SECONDS=0
+MATRIX_RUN_WATCH_TIMEOUT_SECONDS=2
+MATRIX_RUN_ID=untrusted
+wait_for_matrix_run main
+status=$?
+if [ "$status" -eq 0 ]; then
+  printf 'accepted=%s\\n' "$MATRIX_RUN_ID"
+  exit 0
+fi
+[ -z "$MATRIX_RUN_ID" ] || exit 99
+exit "$status"
+'''
+    result = subprocess.run(
+        ['/bin/bash', '--noprofile', '--norc', '-p', '-c', script],
+        env={
+            **os.environ,
+            'LIST_VALUE': list_value,
+            'WATCH_STATUS': watch_status,
+            'WATCH_MARKER': os.fspath(watch_marker),
+            'WATCH_GH': os.fspath(watch_program),
+            'METADATA': metadata,
+            'JOBS': jobs,
+        },
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert (result.returncode == 0) is expected_success, result.stderr
+    assert result.stdout == ('accepted=424242\n' if expected_success else '')
+    assert watch_marker.exists() is watch_expected
+
+
+@pytest.mark.parametrize(
+    ('helper_name', 'write_status', 'remote_state', 'expected_returncode'),
+    (
+        ('main', 9, 'exact', 0),
+        ('main', 0, 'exact', 0),
+        ('main', 9, 'unchanged', 9),
+        ('main', 9, 'conflict', 1),
+        ('tag', 9, 'exact', 0),
+        ('tag', 0, 'exact', 0),
+        ('tag', 9, 'absent', 1),
+        ('tag', 9, 'partial', 1),
+        ('tag', 9, 'conflict', 1),
+    ),
+)
+def test_release_ref_push_reconciliation_accepts_only_exact_remote_state(
+    tmp_path,
+    helper_name,
+    write_status,
+    remote_state,
+    expected_returncode,
+):
+    runbook = (ROOT / 'references/releasing.md').read_text(encoding='utf-8')
+    function_name = f'push_{helper_name}_with_reconciliation'
+    helper = _extract_release_function(runbook, function_name)
+    commit = 'a' * 40
+    old_main = '1' * 40
+    tag_object = 'b' * 40
+    observed_main = commit if remote_state in {'exact', 'absent', 'partial'} else (
+        old_main if remote_state == 'unchanged' else 'c' * 40
+    )
+    marker = tmp_path / 'commands'
+    script = f'''{helper}
+trusted_remote_git() {{
+  printf '%s\\n' "$*" >>"$COMMAND_MARKER"
+  [ "$1" = push ] || return 96
+  return "$WRITE_STATUS"
+}}
+remote_ref_oid() {{
+  [ "$1" = refs/heads/main ] || return 95
+  printf '%s\\n' "$OBSERVED_MAIN"
+}}
+remote_release_tag_state_is_exact() {{
+  [ "$TAG_EXACT" -eq 1 ]
+}}
+retry_post_publish_read_only() {{
+  "$@"
+}}
+REMOTE_URL=https://github.com/longlannet/google-search.git
+VERSION=v2.0.0
+COMMIT={commit}
+REMOTE_MAIN={old_main}
+LOCAL_TAG_OBJECT={tag_object}
+REMOTE_TAG_OBJECT=
+REMOTE_TAG_COMMIT=
+{function_name}
+status=$?
+if [ "$status" -eq 0 ] && [ "{helper_name}" = tag ]; then
+  printf '%s|%s\\n' "$REMOTE_TAG_OBJECT" "$REMOTE_TAG_COMMIT"
+fi
+exit "$status"
+'''
+    result = subprocess.run(
+        ['/bin/bash', '--noprofile', '--norc', '-p', '-c', script],
+        env={
+            **os.environ,
+            'COMMAND_MARKER': os.fspath(marker),
+            'WRITE_STATUS': str(write_status),
+            'OBSERVED_MAIN': observed_main,
+            'TAG_EXACT': '1' if remote_state == 'exact' else '0',
+        },
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == expected_returncode, (result.stdout, result.stderr)
+    expected_output = f'{tag_object}|{commit}\n' if (
+        helper_name == 'tag' and expected_returncode == 0
+    ) else ''
+    assert result.stdout == expected_output
+    commands = marker.read_text(encoding='utf-8').splitlines()
+    assert sum(command.startswith('push ') for command in commands) == 1
+    assert all('--force' not in command for command in commands)
+    assert all(re.search(r'(^|\s):refs/tags/', command) is None for command in commands)
+
+
+def test_release_second_lock_failure_preserves_status_and_only_removes_owned_first_lock(
+    tmp_path,
+):
+    runbook = (ROOT / 'references/releasing.md').read_text(encoding='utf-8')
+    cleanup = _extract_release_function(runbook, 'cleanup_release_state')
+    acquisition_start = runbook.index(
+        'trap cleanup_release_state EXIT',
+        runbook.index('cleanup_release_state() {'),
+    )
+    acquisition_end = runbook.index('\nprepare_release_evidence_target\n', acquisition_start)
+    acquisition = runbook[acquisition_start:acquisition_end]
+    publication_lock = tmp_path / 'publication.lock'
+    gh_lock = tmp_path / 'gh-auth.lock'
+    gh_lock.mkdir(mode=0o700)
+    calls = tmp_path / 'mkdir-count'
+    calls.write_text('0\n', encoding='utf-8')
+    script = f'''{cleanup}
+command_output_is_exact() {{
+  expected="$1"
+  shift
+  observed="$("$@")" || return 1
+  [ "$observed" = "$expected" ]
+}}
+mkdir() {{
+  count="$(cat "$MKDIR_COUNT")"
+  count=$((count + 1))
+  printf '%s\\n' "$count" >"$MKDIR_COUNT"
+  if [ "$count" -eq 1 ]; then
+    /usr/bin/mkdir "$@"
+  else
+    return 9
+  fi
+}}
+set_release_signal_traps() {{ return 0; }}
+CURRENT_UID="$(id -u)"
+PUBLICATION_LOCK_TARGET={publication_lock}
+PUBLICATION_LOCK=
+PUBLICATION_LOCK_IDENTITY=
+GH_AUTH_LOCK_TARGET={gh_lock}
+GH_AUTH_LOCK=
+GH_AUTH_LOCK_IDENTITY=
+CANARY=
+STAGE=
+VERIFY=
+PUBLIC=
+FRESH_KEYRING=
+AUDITED_DIRECTORY=
+RELEASE_CHECKOUT=
+EVIDENCE_TEMP=
+ORIGINAL_GH_ACCOUNT=
+GH_ACCOUNT_SWITCHED=0
+{acquisition}
+'''
+    result = subprocess.run(
+        ['/bin/bash', '--noprofile', '--norc', '-p', '-c', script],
+        env={**os.environ, 'MKDIR_COUNT': os.fspath(calls)},
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 9, (result.stdout, result.stderr)
+    assert calls.read_text(encoding='utf-8') == '2\n'
+    assert not publication_lock.exists()
+    assert gh_lock.is_dir()
+
+
+@pytest.mark.parametrize(
+    ('scenario', 'expected_success', 'gh_retained', 'publication_retained'),
+    (
+        ('success', True, False, False),
+        ('account-failure', False, True, True),
+        ('gh-rmdir-failure', False, True, True),
+        ('gh-identity-mismatch', False, True, True),
+        ('publication-identity-mismatch', False, False, True),
+    ),
+)
+def test_release_cleanup_restores_account_and_releases_only_exact_owned_locks(
+    tmp_path,
+    scenario,
+    expected_success,
+    gh_retained,
+    publication_retained,
+):
+    runbook = (ROOT / 'references/releasing.md').read_text(encoding='utf-8')
+    cleanup = _extract_release_function(runbook, 'cleanup_release_state')
+    publication_lock = tmp_path / 'publication.lock'
+    gh_lock = tmp_path / 'gh-auth.lock'
+    publication_lock.mkdir(mode=0o700)
+    gh_lock.mkdir(mode=0o700)
+    publication_identity = f'{publication_lock.stat().st_dev}:{publication_lock.stat().st_ino}'
+    gh_identity = f'{gh_lock.stat().st_dev}:{gh_lock.stat().st_ino}'
+    if scenario == 'gh-identity-mismatch':
+        gh_identity = '0:0'
+    elif scenario == 'publication-identity-mismatch':
+        publication_identity = '0:0'
+    marker = tmp_path / 'cleanup-order'
+    script = f'''{cleanup}
+command_output_is_exact() {{
+  expected="$1"
+  shift
+  observed="$("$@")" || return 1
+  [ "$observed" = "$expected" ]
+}}
+timeout() {{
+  case " $* " in
+    *' gh auth switch '*)
+      printf 'account-restore\\n' >>"$ORDER_MARKER"
+      [ "$SCENARIO" != account-failure ]
+      ;;
+    *' gh api user '*)
+      printf 'account-verify\\n' >>"$ORDER_MARKER"
+      printf '%s\\n' original-account
+      ;;
+    *) return 97 ;;
+  esac
+}}
+rmdir() {{
+  if [ "$2" = "$GH_AUTH_LOCK_TARGET" ]; then
+    printf 'gh-unlock\\n' >>"$ORDER_MARKER"
+    [ "$SCENARIO" != gh-rmdir-failure ] || return 8
+  elif [ "$2" = "$PUBLICATION_LOCK_TARGET" ]; then
+    printf 'publication-unlock\\n' >>"$ORDER_MARKER"
+  else
+    return 96
+  fi
+  /usr/bin/rmdir "$@"
+}}
+CURRENT_UID="$(id -u)"
+PUBLICATION_LOCK_TARGET={publication_lock}
+PUBLICATION_LOCK="$PUBLICATION_LOCK_TARGET"
+PUBLICATION_LOCK_IDENTITY={publication_identity}
+GH_AUTH_LOCK_TARGET={gh_lock}
+GH_AUTH_LOCK="$GH_AUTH_LOCK_TARGET"
+GH_AUTH_LOCK_IDENTITY={gh_identity}
+CANARY=
+STAGE=
+VERIFY=
+PUBLIC=
+FRESH_KEYRING=
+AUDITED_DIRECTORY=
+RELEASE_CHECKOUT=
+EVIDENCE_TEMP=
+ORIGINAL_GH_ACCOUNT=original-account
+GH_ACCOUNT_SWITCHED=1
+trap cleanup_release_state EXIT
+exit 0
+'''
+    result = subprocess.run(
+        ['/bin/bash', '--noprofile', '--norc', '-p', '-c', script],
+        env={
+            **os.environ,
+            'ORDER_MARKER': os.fspath(marker),
+            'SCENARIO': scenario,
+        },
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert (result.returncode == 0) is expected_success, (result.stdout, result.stderr)
+    assert gh_lock.exists() is gh_retained
+    assert publication_lock.exists() is publication_retained
+    calls = marker.read_text(encoding='utf-8').splitlines()
+    expected_calls = {
+        'success': [
+            'account-restore',
+            'account-verify',
+            'gh-unlock',
+            'publication-unlock',
+        ],
+        'account-failure': ['account-restore'],
+        'gh-rmdir-failure': ['account-restore', 'account-verify', 'gh-unlock'],
+        'gh-identity-mismatch': ['account-restore', 'account-verify'],
+        'publication-identity-mismatch': [
+            'account-restore',
+            'account-verify',
+            'gh-unlock',
+        ],
+    }
+    assert calls == expected_calls[scenario]
+
+
+def test_release_cleanup_does_not_redelete_a_lock_path_recreated_after_rmdir(tmp_path):
+    runbook = (ROOT / 'references/releasing.md').read_text(encoding='utf-8')
+    cleanup = _extract_release_function(runbook, 'cleanup_release_state')
+    exit_statement = '  exit "$status"\n}'
+    assert cleanup.count(exit_statement) == 1
+    cleanup = cleanup.replace(
+        exit_statement,
+        "  printf 'state=%s|%s\\n' \"$GH_AUTH_LOCK\" \"$GH_AUTH_LOCK_IDENTITY\"\n"
+        '  return "$status"\n}',
+    )
+    gh_lock = tmp_path / 'gh-auth.lock'
+    gh_lock.mkdir(mode=0o700)
+    original_identity = (gh_lock.stat().st_dev, gh_lock.stat().st_ino)
+    old_lock_fd = os.open(gh_lock, os.O_RDONLY | os.O_DIRECTORY)
+    marker = tmp_path / 'rmdir-calls'
+    script = f'''{cleanup}
+{_release_shell_prelude(runbook)}
+rmdir() {{
+  printf 'call\\n' >>"$RMDIR_MARKER"
+  [ "$2" = "$GH_AUTH_LOCK_TARGET" ] || return 96
+  /usr/bin/rmdir "$@" || return 1
+  /usr/bin/mkdir -m 700 -- "$GH_AUTH_LOCK_TARGET" || return 1
+}}
+PUBLICATION_LOCK_TARGET={tmp_path / 'publication.lock'}
+PUBLICATION_LOCK=
+PUBLICATION_LOCK_IDENTITY=
+GH_AUTH_LOCK_TARGET={gh_lock}
+GH_AUTH_LOCK="$GH_AUTH_LOCK_TARGET"
+GH_AUTH_LOCK_IDENTITY="$(stat -c '%d:%i' -- "$GH_AUTH_LOCK")"
+CANARY=
+STAGE=
+VERIFY=
+PUBLIC=
+FRESH_KEYRING=
+AUDITED_DIRECTORY=
+RELEASE_CHECKOUT=
+EVIDENCE_TEMP=
+ORIGINAL_GH_ACCOUNT=
+GH_ACCOUNT_SWITCHED=0
+cleanup_release_state
+'''
+    try:
+        result = subprocess.run(
+            ['/bin/bash', '--noprofile', '--norc', '-p', '-c', script],
+            env={**os.environ, 'RMDIR_MARKER': os.fspath(marker)},
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+
+        assert result.returncode == 0, (result.stdout, result.stderr)
+        assert result.stdout == 'state=|\n'
+        assert marker.read_text(encoding='utf-8') == 'call\n'
+        assert gh_lock.is_dir()
+        recreated_identity = (gh_lock.stat().st_dev, gh_lock.stat().st_ino)
+        assert recreated_identity != original_identity
+    finally:
+        os.close(old_lock_fd)
+
+
+@pytest.mark.parametrize(('recovery_ready', 'expected_preserved'), ((0, False), (1, True)))
+def test_release_cleanup_preserves_only_fsynced_recoverable_evidence(
+    tmp_path,
+    recovery_ready,
+    expected_preserved,
+):
+    runbook = (ROOT / 'references/releasing.md').read_text(encoding='utf-8')
+    helpers = '\n'.join(
+        _extract_release_function(runbook, name)
+        for name in (
+            'release_evidence_temp_is_safe',
+            'remove_release_evidence_temp',
+            'cleanup_release_state',
+        )
+    )
+    evidence_directory = tmp_path / 'evidence'
+    evidence_directory.mkdir(mode=0o700)
+    evidence_directory.chmod(0o700)
+    evidence_temp = evidence_directory / '.google-search-v2.0.0.evidence.ABCDEFGH'
+    evidence_temp.write_text('repository=longlannet/google-search\n', encoding='utf-8')
+    evidence_temp.chmod(0o600)
+    publication_lock = tmp_path / 'publication.lock'
+    gh_lock = tmp_path / 'gh-auth.lock'
+    publication_lock.mkdir(mode=0o700)
+    gh_lock.mkdir(mode=0o700)
+    publication_identity = f'{publication_lock.stat().st_dev}:{publication_lock.stat().st_ino}'
+    gh_identity = f'{gh_lock.stat().st_dev}:{gh_lock.stat().st_ino}'
+    order_marker = tmp_path / 'cleanup-order'
+    script = f'''{helpers}
+command_output_is_exact() {{
+  expected="$1"
+  shift
+  observed="$("$@")" || return 1
+  [ "$observed" = "$expected" ]
+}}
+timeout() {{
+  case " $* " in
+    *' gh auth switch '*)
+      printf 'account-restore\n' >>"$ORDER_MARKER"
+      ;;
+    *' gh api user '*)
+      printf 'account-verify\n' >>"$ORDER_MARKER"
+      printf '%s\n' original-account
+      ;;
+    *) return 97 ;;
+  esac
+}}
+rmdir() {{
+  if [ "$2" = "$GH_AUTH_LOCK_TARGET" ]; then
+    printf 'gh-unlock\n' >>"$ORDER_MARKER"
+  elif [ "$2" = "$PUBLICATION_LOCK_TARGET" ]; then
+    printf 'publication-unlock\n' >>"$ORDER_MARKER"
+  else
+    return 96
+  fi
+  /usr/bin/rmdir "$@"
+}}
+CURRENT_UID="$(id -u)"
+VERSION=v2.0.0
+EVIDENCE_DIRECTORY={evidence_directory}
+EVIDENCE_TEMP={evidence_temp}
+EVIDENCE_RECOVERY_READY={recovery_ready}
+FRESH_KEYRING=
+PUBLIC=
+VERIFY=
+STAGE=
+CANARY=
+AUDITED_DIRECTORY=
+RELEASE_CHECKOUT=
+ORIGINAL_GH_ACCOUNT=original-account
+GH_ACCOUNT_SWITCHED=1
+GH_AUTH_LOCK_TARGET={gh_lock}
+GH_AUTH_LOCK="$GH_AUTH_LOCK_TARGET"
+GH_AUTH_LOCK_IDENTITY={gh_identity}
+PUBLICATION_LOCK_TARGET={publication_lock}
+PUBLICATION_LOCK="$PUBLICATION_LOCK_TARGET"
+PUBLICATION_LOCK_IDENTITY={publication_identity}
+cleanup_release_state
+'''
+    result = subprocess.run(
+        ['/bin/bash', '--noprofile', '--norc', '-p', '-c', script],
+        text=True,
+        capture_output=True,
+        check=False,
+        env={**os.environ, 'ORDER_MARKER': os.fspath(order_marker)},
+    )
+
+    assert (result.returncode != 0) is expected_preserved, result.stderr
+    assert evidence_temp.exists() is expected_preserved
+    assert not gh_lock.exists()
+    assert not publication_lock.exists()
+    assert order_marker.read_text(encoding='utf-8').splitlines() == [
+        'account-restore',
+        'account-verify',
+        'gh-unlock',
+        'publication-unlock',
+    ]
+    expected_message = 'recoverable release evidence preserved:'
+    assert (expected_message in result.stderr) is expected_preserved
+    if expected_preserved:
+        metadata = evidence_temp.stat()
+        assert stat.S_IMODE(metadata.st_mode) == 0o600
+        assert metadata.st_nlink == 1
+
+
+def test_release_evidence_recovery_flag_transition_ignores_signal_after_fsync():
+    runbook = (ROOT / 'references/releasing.md').read_text(encoding='utf-8')
+    prepare = _extract_release_function(runbook, 'prepare_incomplete_release_evidence')
+    assert prepare.index('[ -z "$EVIDENCE_TEMP" ] || return 1') < prepare.index(
+        'prepare_release_evidence_target || return 1'
+    )
+    assert prepare.index('[ "$EVIDENCE_RECOVERY_READY" -eq 0 ] || return 1') < (
+        prepare.index('prepare_release_evidence_target || return 1')
+    )
+    assert prepare.index('[ "$EVIDENCE_COMPLETION_APPENDED" -eq 0 ] || return 1') < (
+        prepare.index('prepare_release_evidence_target || return 1')
+    )
+    transition_start = prepare.index("  trap '' HUP INT TERM\n")
+    transition_end = prepare.rindex('\n}')
+    transition = prepare[transition_start:transition_end]
+    sync_call = '/usr/bin/sync -f "$EVIDENCE_TEMP"'
+    assert transition.count(sync_call) == 1
+    transition = transition.replace(sync_call, 'signal_after_fsync')
+    script = f'''set -euo pipefail
+set_release_signal_traps() {{
+  trap 'exit 129' HUP
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
+}}
+signal_after_fsync() {{
+  kill -TERM "$BASHPID"
+}}
+probe_transition() {{
+  local sync_status
+{transition}
+}}
+EVIDENCE_TEMP=/tmp/google-search-test-evidence
+EVIDENCE_RECOVERY_READY=0
+set_release_signal_traps
+probe_transition
+printf 'ready=%s\n' "$EVIDENCE_RECOVERY_READY"
+'''
+    result = subprocess.run(
+        ['/bin/bash', '--noprofile', '--norc', '-p', '-c', script],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, (result.stdout, result.stderr)
+    assert result.stdout == 'ready=1\n'
+
+
+@pytest.mark.parametrize(
+    ('scenario', 'create_status', 'expected_success'),
+    (
+        ('exact', 0, True),
+        ('recovered-after-status-9', 9, True),
+        ('immutable-draft', 9, False),
+        ('rest-id-mismatch', 9, False),
+        ('database-id-changed', 9, False),
+        ('rest-id-changed', 9, False),
+    ),
+)
+def test_release_draft_creation_captures_stable_ids_after_exact_empty_draft(
+    tmp_path,
+    scenario,
+    create_status,
+    expected_success,
+):
+    runbook = (ROOT / 'references/releasing.md').read_text(encoding='utf-8')
+    helpers = '\n'.join(
+        _extract_release_function(runbook, name)
+        for name in (
+            'capture_release_ids',
+            'assert_release_ids_exact',
+            'assert_exact_draft',
+            'create_draft_with_reconciliation',
+        )
+    )
+    marker = tmp_path / 'draft-calls'
+    draft_state = 'true|false|true' if scenario == 'immutable-draft' else 'true|false|false'
+    first_rest_id = '124' if scenario == 'rest-id-mismatch' else '123'
+    later_database_id = '124' if scenario == 'database-id-changed' else '123'
+    later_rest_id = '124' if scenario == 'rest-id-changed' else first_rest_id
+    script = f'''{helpers}
+next_database_id() {{
+  count="$(grep -c '^database|' "$COMMAND_MARKER")"
+  if [ "$count" -eq 1 ]; then
+    printf '%s\\n' "$FIRST_DATABASE_ID"
+  else
+    printf '%s\\n' "$LATER_DATABASE_ID"
+  fi
+}}
+next_rest_id() {{
+  count="$(grep -c '^rest|' "$COMMAND_MARKER")"
+  if [ "$count" -eq 1 ]; then
+    printf '%s\\n' "$FIRST_REST_ID"
+  else
+    printf '%s\\n' "$LATER_REST_ID"
+  fi
+}}
+gh() {{
+  case " $* " in
+    *' release create '*)
+      printf 'create|%s\\n' "$*" >>"$COMMAND_MARKER"
+      return "$CREATE_STATUS"
+      ;;
+    *' release view '*' --json isDraft,isPrerelease,isImmutable '*)
+      printf 'state|%s\\n' "$*" >>"$COMMAND_MARKER"
+      printf '%s\\n' "$DRAFT_STATE"
+      ;;
+    *' release view '*' --json databaseId '*)
+      printf 'database|%s\\n' "$*" >>"$COMMAND_MARKER"
+      next_database_id
+      ;;
+    *' api '*'releases/tags/'*)
+      printf 'rest|%s\\n' "$*" >>"$COMMAND_MARKER"
+      next_rest_id
+      ;;
+    *) return 97 ;;
+  esac
+}}
+assert_release_identity() {{
+  printf 'identity\\n' >>"$COMMAND_MARKER"
+}}
+assert_release_asset_names() {{
+  printf 'asset-names|%s\\n' "$1" >>"$COMMAND_MARKER"
+  [ -z "$1" ]
+}}
+retry_post_publish_read_only() {{
+  "$@"
+}}
+VERSION=v2.0.0
+REPOSITORY=longlannet/google-search
+NOTES=/tmp/notes
+RELEASE_DATABASE_ID=
+RELEASE_REST_ID=
+create_draft_with_reconciliation
+status=$?
+if [ "$status" -eq 0 ]; then
+  printf '%s|%s\\n' "$RELEASE_DATABASE_ID" "$RELEASE_REST_ID"
+fi
+exit "$status"
+'''
+    result = subprocess.run(
+        ['/bin/bash', '--noprofile', '--norc', '-p', '-c', script],
+        env={
+            **os.environ,
+            'COMMAND_MARKER': os.fspath(marker),
+            'CREATE_STATUS': str(create_status),
+            'DRAFT_STATE': draft_state,
+            'FIRST_DATABASE_ID': '123',
+            'FIRST_REST_ID': first_rest_id,
+            'LATER_DATABASE_ID': later_database_id,
+            'LATER_REST_ID': later_rest_id,
+        },
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert (result.returncode == 0) is expected_success, (result.stdout, result.stderr)
+    assert result.stdout == ('123|123\n' if expected_success else '')
+    calls = marker.read_text(encoding='utf-8').splitlines()
+    assert sum(call.startswith('create|') for call in calls) == 1
+    assert all(' release upload ' not in call for call in calls)
+    assert all('--clobber' not in call for call in calls)
+    if expected_success:
+        assert [call.split('|', 1)[0] for call in calls] == [
+            'create',
+            'state',
+            'identity',
+            'database',
+            'rest',
+            'database',
+            'rest',
+            'asset-names',
+        ]
+
+
+@pytest.mark.parametrize(
+    ('failed_check', 'expected_success'),
+    (
+        ('none', True),
+        ('draft', False),
+        ('ids', False),
+        ('asset-names', False),
+        ('bytes', False),
+    ),
+)
+def test_release_asset_upload_status_9_requires_exact_draft_ids_names_and_bytes(
+    tmp_path,
+    failed_check,
+    expected_success,
+):
+    runbook = (ROOT / 'references/releasing.md').read_text(encoding='utf-8')
+    helper = _extract_release_function(runbook, 'upload_asset_with_reconciliation')
+    marker = tmp_path / 'upload-calls'
+    script = f'''{helper}
+gh() {{
+  printf 'upload|%s\\n' "$*" >>"$COMMAND_MARKER"
+  return 9
+}}
+assert_exact_draft() {{
+  printf 'draft\\n' >>"$COMMAND_MARKER"
+  [ "$FAILED_CHECK" != draft ]
+}}
+assert_release_ids_exact() {{
+  printf 'ids\\n' >>"$COMMAND_MARKER"
+  [ "$FAILED_CHECK" != ids ]
+}}
+assert_release_asset_names() {{
+  printf 'asset-names|%s\\n' "$1" >>"$COMMAND_MARKER"
+  [ "$FAILED_CHECK" != asset-names ]
+}}
+verify_uploaded_release_asset() {{
+  printf 'bytes|%s|%s\\n' "$1" "$2" >>"$COMMAND_MARKER"
+  [ "$FAILED_CHECK" = none ]
+}}
+retry_post_publish_read_only() {{
+  "$@"
+}}
+VERSION=v2.0.0
+REPOSITORY=longlannet/google-search
+ASSET=google-search-v2.0.0.tar
+upload_asset_with_reconciliation /tmp/SHA256SUMS SHA256SUMS
+'''
+    result = subprocess.run(
+        ['/bin/bash', '--noprofile', '--norc', '-p', '-c', script],
+        env={
+            **os.environ,
+            'COMMAND_MARKER': os.fspath(marker),
+            'FAILED_CHECK': failed_check,
+        },
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert (result.returncode == 0) is expected_success, (result.stdout, result.stderr)
+    calls = marker.read_text(encoding='utf-8').splitlines()
+    writes = [call for call in calls if call.startswith('upload|')]
+    assert len(writes) == 1
+    assert '--clobber' not in writes[0]
+
+
+@pytest.mark.parametrize(
+    ('scenario', 'expected_success', 'expected_writes'),
+    (
+        ('already-published', True, 0),
+        ('status-9-then-published', True, 1),
+        ('unknown-state', False, 0),
+        ('still-draft-after-edit', False, 1),
+    ),
+)
+def test_release_publish_retry_is_read_only_before_write_and_reconciles_exact_state(
+    tmp_path,
+    scenario,
+    expected_success,
+    expected_writes,
+):
+    runbook = (ROOT / 'references/releasing.md').read_text(encoding='utf-8')
+    helper = _extract_release_function(runbook, 'publish_release_with_reconciliation')
+    marker = tmp_path / 'publish-calls'
+    script = f'''{helper}
+edit_was_sent() {{
+  grep -q '^edit|' "$COMMAND_MARKER" 2>/dev/null
+}}
+assert_published_release_state() {{
+  printf 'published-check\\n' >>"$COMMAND_MARKER"
+  case "$SCENARIO" in
+    already-published) return 0 ;;
+    status-9-then-published) edit_was_sent ;;
+    *) return 1 ;;
+  esac
+}}
+assert_exact_draft() {{
+  printf 'draft-check\\n' >>"$COMMAND_MARKER"
+  case "$SCENARIO" in
+    status-9-then-published|still-draft-after-edit) return 0 ;;
+    *) return 1 ;;
+  esac
+}}
+assert_release_ids_exact() {{ printf 'id-check\\n' >>"$COMMAND_MARKER"; }}
+assert_release_asset_manifest_exact() {{
+  printf 'asset-check|%s\\n' "$1" >>"$COMMAND_MARKER"
+}}
+retry_post_publish_read_only() {{
+  printf 'retry|%s\\n' "$1" >>"$COMMAND_MARKER"
+  "$@"
+}}
+gh() {{
+  printf 'edit|%s\\n' "$*" >>"$COMMAND_MARKER"
+  [ "$SCENARIO" != status-9-then-published ]
+}}
+VERSION=v2.0.0
+REPOSITORY=longlannet/google-search
+EXPECTED_ALL_ASSET_NAMES=expected-assets
+VERIFIED_ASSETS=/tmp/verified-assets
+publish_release_with_reconciliation
+'''
+    result = subprocess.run(
+        ['/bin/bash', '--noprofile', '--norc', '-p', '-c', script],
+        env={
+            **os.environ,
+            'COMMAND_MARKER': os.fspath(marker),
+            'SCENARIO': scenario,
+        },
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert (result.returncode == 0) is expected_success, (result.stdout, result.stderr)
+    calls = marker.read_text(encoding='utf-8').splitlines()
+    writes = [call for call in calls if call.startswith('edit|')]
+    assert len(writes) == expected_writes
+    assert all('--draft=false' in write and '--latest' in write for write in writes)
+
+
+@pytest.mark.parametrize(
+    ('mutation', 'expected_success'),
+    (
+        ('none', True),
+        ('wrong-release-id', False),
+        ('duplicate-asset-id', False),
+        ('unknown-name', False),
+        ('wrong-size', False),
+        ('wrong-digest', False),
+        ('extra-field', False),
+        ('missing-asset', False),
+    ),
+)
+def test_release_asset_manifest_binds_rest_ids_sizes_digests_and_local_bytes(
+    tmp_path,
+    mutation,
+    expected_success,
+):
+    runbook = (ROOT / 'references/releasing.md').read_text(encoding='utf-8')
+    helpers = '\n'.join(
+        _extract_release_function(runbook, name)
+        for name in ('sha256_of_file', 'observe_release_asset_manifest')
+    )
+    stage = tmp_path / 'stage'
+    verify = tmp_path / 'verify'
+    stage.mkdir(mode=0o700)
+    verify.mkdir(mode=0o700)
+    stage.chmod(0o700)
+    verify.chmod(0o700)
+    archive_name = 'google-search-v2.0.0.tar'
+    rows = []
+    for asset_id, (name, payload) in enumerate(
+        (
+            ('SHA256SUMS', b'checksums\n'),
+            ('SHA256SUMS.asc', b'signature\n'),
+            (archive_name, b'archive bytes\n'),
+        ),
+        start=101,
+    ):
+        path = stage / name
+        path.write_bytes(payload)
+        path.chmod(0o600)
+        rows.append([
+            name,
+            str(asset_id),
+            str(len(payload)),
+            f'sha256:{hashlib.sha256(payload).hexdigest()}',
+        ])
+    release_id = '124' if mutation == 'wrong-release-id' else '123'
+    if mutation == 'duplicate-asset-id':
+        rows[1][1] = rows[0][1]
+    elif mutation == 'unknown-name':
+        rows[0][0] = 'unexpected.bin'
+    elif mutation == 'wrong-size':
+        rows[0][2] = str(int(rows[0][2]) + 1)
+    elif mutation == 'wrong-digest':
+        rows[0][3] = f'sha256:{"0" * 64}'
+    elif mutation == 'extra-field':
+        rows[0].append('unexpected')
+    elif mutation == 'missing-asset':
+        rows.pop()
+    manifest = '\n'.join('|'.join(row) for row in rows)
+    raw_manifest = f'release|{release_id}||'
+    if manifest:
+        raw_manifest = f'{raw_manifest}\n{manifest}'
+    expected_names = '\n'.join(('SHA256SUMS', 'SHA256SUMS.asc', archive_name))
+    marker = tmp_path / 'manifest-api'
+    script = f'''{helpers}
+command_output_is_exact() {{
+  expected="$1"
+  shift
+  observed="$("$@")" || return 1
+  [ "$observed" = "$expected" ]
+}}
+gh() {{
+  printf '%s|%s\\n' "$1" "$2" >>"$COMMAND_MARKER"
+  [ "$1" = api ] || return 97
+  [ "$2" = repos/longlannet/google-search/releases/tags/v2.0.0 ] || return 96
+  printf '%s\\n' "$RAW_MANIFEST"
+}}
+CURRENT_UID="$(id -u)"
+REPOSITORY=longlannet/google-search
+VERSION=v2.0.0
+ASSET={archive_name}
+STAGE={stage}
+VERIFY={verify}
+RELEASE_REST_ID=123
+observe_release_asset_manifest "$EXPECTED_NAMES" "$STAGE"
+'''
+    result = subprocess.run(
+        ['/bin/bash', '--noprofile', '--norc', '-p', '-c', script],
+        env={
+            **os.environ,
+            'COMMAND_MARKER': os.fspath(marker),
+            'RAW_MANIFEST': raw_manifest,
+            'EXPECTED_NAMES': expected_names,
+        },
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert (result.returncode == 0) is expected_success, (result.stdout, result.stderr)
+    assert result.stdout == (f'{manifest}\n' if expected_success else '')
+    calls = marker.read_text(encoding='utf-8').splitlines()
+    assert calls == ['api|repos/longlannet/google-search/releases/tags/v2.0.0']
+
+
+@pytest.mark.parametrize(
+    ('asset_name', 'asset_id', 'mutation', 'expected_success'),
+    (
+        ('SHA256SUMS', 101, 'none', True),
+        ('SHA256SUMS.asc', 102, 'none', True),
+        ('google-search-v2.0.0.tar', 103, 'none', True),
+        ('SHA256SUMS', 101, 'wrong-bytes', False),
+        ('SHA256SUMS', 101, 'changed-manifest', False),
+        ('SHA256SUMS', 101, 'duplicate-name', False),
+    ),
+)
+def test_release_uploaded_asset_download_uses_manifest_rest_id_and_exact_bytes(
+    tmp_path,
+    asset_name,
+    asset_id,
+    mutation,
+    expected_success,
+):
+    runbook = (ROOT / 'references/releasing.md').read_text(encoding='utf-8')
+    helper = _extract_release_function(runbook, 'verify_uploaded_release_asset')
+    stage = tmp_path / 'stage'
+    verify = tmp_path / 'verify'
+    stage.mkdir(mode=0o700)
+    verify.mkdir(mode=0o700)
+    stage.chmod(0o700)
+    verify.chmod(0o700)
+    archive_name = 'google-search-v2.0.0.tar'
+    payloads = {
+        'SHA256SUMS': b'checksums\n',
+        'SHA256SUMS.asc': b'signature\n',
+        archive_name: b'archive bytes\n',
+    }
+    ids = {'SHA256SUMS': 101, 'SHA256SUMS.asc': 102, archive_name: 103}
+    rows = [
+        f'{name}|{ids[name]}|{len(payload)}|sha256:{hashlib.sha256(payload).hexdigest()}'
+        for name, payload in payloads.items()
+    ]
+    manifest = '\n'.join(rows)
+    for name, payload in payloads.items():
+        path = stage / name
+        path.write_bytes(payload)
+        path.chmod(0o600)
+    marker = tmp_path / 'asset-api'
+    script = f'''{helper}
+command_output_is_exact() {{
+  expected="$1"
+  shift
+  observed="$("$@")" || return 1
+  [ "$observed" = "$expected" ]
+}}
+assert_exact_draft() {{ return 0; }}
+assert_release_ids_exact() {{ return 0; }}
+observe_release_asset_manifest() {{
+  printf 'manifest\\n' >>"$COMMAND_MARKER"
+  count="$(grep -c '^manifest$' "$COMMAND_MARKER")"
+  if [ "$MUTATION" = duplicate-name ]; then
+    printf '%s\\n%s\\n' "$MANIFEST" "$TARGET_ROW"
+  elif [ "$MUTATION" = changed-manifest ] && [ "$count" -gt 1 ]; then
+    printf '%s\\n' "$MANIFEST" | sed 's/|101|/|999|/'
+  else
+    printf '%s\\n' "$MANIFEST"
+  fi
+}}
+gh() {{
+  printf 'api|%s\\n' "$*" >>"$COMMAND_MARKER"
+  [ "$1" = api ] || return 97
+  case " $* " in
+    *"releases/assets/$EXPECTED_ASSET_ID"*) ;;
+    *) return 96 ;;
+  esac
+  if [ "$MUTATION" = wrong-bytes ]; then
+    printf '%s' wrong
+  else
+    printf '%s' "$EXPECTED_PAYLOAD"
+  fi
+}}
+umask 077
+CURRENT_UID="$(id -u)"
+REPOSITORY=longlannet/google-search
+VERSION=v2.0.0
+ASSET={archive_name}
+STAGE={stage}
+VERIFY={verify}
+verify_uploaded_release_asset "$STAGE/{asset_name}" "$EXPECTED_NAMES"
+'''
+    target_row = next(row for row in rows if row.startswith(f'{asset_name}|'))
+    result = subprocess.run(
+        ['/bin/bash', '--noprofile', '--norc', '-p', '-c', script],
+        env={
+            **os.environ,
+            'COMMAND_MARKER': os.fspath(marker),
+            'MUTATION': mutation,
+            'MANIFEST': manifest,
+            'TARGET_ROW': target_row,
+            'EXPECTED_ASSET_ID': str(asset_id),
+            'EXPECTED_PAYLOAD': payloads[asset_name].decode(),
+            'EXPECTED_NAMES': '\n'.join(payloads),
+        },
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert (result.returncode == 0) is expected_success, (result.stdout, result.stderr)
+    calls = marker.read_text(encoding='utf-8').splitlines()
+    api_calls = [call for call in calls if call.startswith('api|')]
+    expected_api_calls = 0 if mutation == 'duplicate-name' else 1
+    assert len(api_calls) == expected_api_calls
+    if api_calls:
+        assert '--header Accept: application/octet-stream' in api_calls[0]
+        assert f'releases/assets/{asset_id}' in api_calls[0]
+
+
+def test_release_asset_download_retry_uses_fresh_attempt_and_only_exposes_canonical_result(
+    tmp_path,
+):
+    runbook = (ROOT / 'references/releasing.md').read_text(encoding='utf-8')
+    helper = _extract_release_function(runbook, 'download_release_assets_by_id_once')
+    stage = tmp_path / 'stage'
+    verify = tmp_path / 'verify'
+    stage.mkdir(mode=0o700)
+    verify.mkdir(mode=0o700)
+    stage.chmod(0o700)
+    verify.chmod(0o700)
+    archive_name = 'google-search-v2.0.0.tar'
+    payloads = {
+        'SHA256SUMS': b'checksums\n',
+        'SHA256SUMS.asc': b'signature\n',
+        archive_name: b'archive bytes\n',
+    }
+    ids = {'SHA256SUMS': 101, 'SHA256SUMS.asc': 102, archive_name: 103}
+    rows = []
+    for name, payload in payloads.items():
+        path = stage / name
+        path.write_bytes(payload)
+        path.chmod(0o600)
+        rows.append(
+            f'{name}|{ids[name]}|{len(payload)}|'
+            f'sha256:{hashlib.sha256(payload).hexdigest()}'
+        )
+    manifest = '\n'.join(rows)
+    marker = tmp_path / 'download-attempts'
+    script = f'''{helper}
+command_output_is_exact() {{
+  expected="$1"
+  shift
+  if [ "$expected" = "$CURRENT_UID:700" ]; then
+    printf 'directory|%s|%s\\n' "$ATTEMPT" "$5" >>"$ATTEMPT_MARKER"
+  fi
+  observed="$("$@")" || return 1
+  [ "$observed" = "$expected" ]
+}}
+observe_release_asset_manifest() {{
+  printf '%s\\n' "$RELEASE_ASSET_MANIFEST"
+}}
+assert_release_asset_manifest_exact() {{
+  [ "$1" = "$VERIFIED_ASSETS" ] || return 1
+  for name in SHA256SUMS SHA256SUMS.asc "$ASSET"; do
+    cmp -- "$STAGE/$name" "$1/$name" || return 1
+  done
+}}
+gh() {{
+  endpoint="$4"
+  case "$endpoint" in
+    */releases/assets/101) payload=checksums ;;
+    */releases/assets/102) payload=signature ;;
+    */releases/assets/103) payload='archive bytes' ;;
+    *) return 96 ;;
+  esac
+  printf 'api|%s|%s\\n' "$ATTEMPT" "$endpoint" >>"$ATTEMPT_MARKER"
+  if [ "$ATTEMPT" -eq 1 ]; then
+    printf 'wrong\\n'
+  else
+    printf '%s\\n' "$payload"
+  fi
+}}
+retry_post_publish_read_only() {{
+  ATTEMPT=1
+  if "$@"; then
+    return 97
+  fi
+  ATTEMPT=2
+  "$@"
+}}
+umask 077
+CURRENT_UID="$(id -u)"
+REPOSITORY=longlannet/google-search
+VERSION=v2.0.0
+ASSET={archive_name}
+STAGE={stage}
+VERIFY={verify}
+VERIFIED_ASSETS=
+EXPECTED_ALL_ASSET_NAMES="$EXPECTED_NAMES"
+RELEASE_ASSET_MANIFEST="$EXPECTED_MANIFEST"
+VERIFIED_ASSETS="$(retry_post_publish_read_only download_release_assets_by_id_once)"
+status=$?
+if [ "$status" -eq 0 ]; then
+  printf 'canonical=%s\\n' "$VERIFIED_ASSETS"
+fi
+exit "$status"
+'''
+    result = subprocess.run(
+        ['/bin/bash', '--noprofile', '--norc', '-p', '-c', script],
+        env={
+            **os.environ,
+            'ATTEMPT_MARKER': os.fspath(marker),
+            'EXPECTED_NAMES': '\n'.join(payloads),
+            'EXPECTED_MANIFEST': manifest,
+        },
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, (result.stdout, result.stderr)
+    assert result.stdout.startswith('canonical=')
+    canonical = Path(result.stdout.removeprefix('canonical=').strip())
+    attempts = [
+        Path(line.split('|', 2)[2])
+        for line in marker.read_text(encoding='utf-8').splitlines()
+        if line.startswith('directory|')
+    ]
+    assert len(attempts) == 2
+    assert attempts[0] != attempts[1]
+    assert canonical == attempts[1]
+    assert canonical.parent == verify
+    assert re.fullmatch(r'release-assets\.[A-Za-z0-9]{8}', canonical.name)
+    assert stat.S_IMODE(canonical.stat().st_mode) == 0o700
+    assert sorted(path.name for path in canonical.iterdir()) == sorted(payloads)
+    for name, payload in payloads.items():
+        downloaded = canonical / name
+        assert downloaded.read_bytes() == payload
+        metadata = downloaded.stat()
+        assert stat.S_IMODE(metadata.st_mode) == 0o600
+        assert metadata.st_nlink == 1
+    assert (attempts[0] / 'SHA256SUMS').read_bytes() == b'wrong\n'
+
+
+@pytest.mark.parametrize(
+    'mutation',
+    (
+        'none',
+        'wrong-tag',
+        'wrong-published-at',
+        'mutable',
+        'extra-asset',
+        'bad-digest',
+        'duplicate-asset',
+        'duplicate-asset-id',
+        'duplicate-json-key',
+        'non-finite-json',
+        'absolute-asset-name',
+        'traversal-asset-name',
+        'fifo-asset-name',
+        'expected-file-symlink',
+        'expected-file-hardlink',
+        'expected-file-fifo',
+    ),
+)
+def test_release_anonymous_latest_parser_requires_exact_identity_and_asset_digests(
+    tmp_path,
+    mutation,
+):
+    runbook = (ROOT / 'references/releasing.md').read_text(encoding='utf-8')
+    helper = _extract_release_function(runbook, 'anonymous_latest_release_id')
+    verified = tmp_path / 'verified'
+    verified.mkdir(mode=0o700)
+    verified.chmod(0o700)
+    archive_name = 'google-search-v2.0.0.tar'
+    for name, payload in (
+        (archive_name, b'archive bytes\n'),
+        ('SHA256SUMS', b'checksums\n'),
+        ('SHA256SUMS.asc', b'signature\n'),
+    ):
+        path = verified / name
+        path.write_bytes(payload)
+        path.chmod(0o600)
+    assets = []
+    for index, name in enumerate((archive_name, 'SHA256SUMS', 'SHA256SUMS.asc'), start=1):
+        payload = (verified / name).read_bytes()
+        assets.append({
+            'id': index,
+            'name': name,
+            'state': 'uploaded',
+            'size': len(payload),
+            'digest': f'sha256:{hashlib.sha256(payload).hexdigest()}',
+        })
+    document = {
+        'id': 123,
+        'tag_name': 'v2.0.0',
+        'name': 'google-search v2.0.0',
+        'draft': False,
+        'prerelease': False,
+        'immutable': True,
+        'published_at': '2026-08-23T08:00:00Z',
+        'author': {'login': 'longlannet'},
+        'assets': assets,
+    }
+    if mutation == 'wrong-tag':
+        document['tag_name'] = 'v1.3.0'
+    elif mutation == 'wrong-published-at':
+        document['published_at'] = '2026-08-23T08:00:01Z'
+    elif mutation == 'mutable':
+        document['immutable'] = False
+    elif mutation == 'extra-asset':
+        document['assets'].append({**assets[0], 'id': 9, 'name': 'extra'})
+    elif mutation == 'bad-digest':
+        document['assets'][0]['digest'] = f'sha256:{"0" * 64}'
+    elif mutation == 'duplicate-asset':
+        document['assets'][2] = dict(document['assets'][0], id=7)
+    elif mutation == 'duplicate-asset-id':
+        document['assets'][2]['id'] = document['assets'][0]['id']
+    elif mutation == 'expected-file-symlink':
+        archive = verified / archive_name
+        external = tmp_path / 'external-archive'
+        external.write_bytes(archive.read_bytes())
+        external.chmod(0o600)
+        archive.unlink()
+        archive.symlink_to(external)
+    elif mutation == 'expected-file-hardlink':
+        os.link(verified / archive_name, tmp_path / 'second-archive-link')
+    elif mutation == 'expected-file-fifo':
+        archive = verified / archive_name
+        archive.unlink()
+        os.mkfifo(archive, mode=0o600)
+    blocking_fifo = tmp_path / 'blocking-fifo'
+    if mutation in {'absolute-asset-name', 'traversal-asset-name', 'fifo-asset-name'}:
+        os.mkfifo(blocking_fifo, mode=0o600)
+        if mutation == 'absolute-asset-name':
+            document['assets'][0]['name'] = os.fspath(blocking_fifo)
+        elif mutation == 'traversal-asset-name':
+            document['assets'][0]['name'] = '../blocking-fifo'
+        else:
+            local_fifo = verified / 'blocking-fifo'
+            os.mkfifo(local_fifo, mode=0o600)
+            document['assets'][0]['name'] = local_fifo.name
+    document_path = tmp_path / 'latest.json'
+    expected_manifest = '\n'.join(
+        f"{asset['name']}|{asset['id']}|{asset['size']}|{asset['digest']}"
+        for asset in sorted(assets, key=lambda item: item['name'])
+    )
+    serialized = json.dumps(document)
+    if mutation == 'duplicate-json-key':
+        serialized = serialized.replace('"id": 123,', '"id": 123, "id": 123,', 1)
+    elif mutation == 'non-finite-json':
+        serialized = serialized[:-1] + ', "unexpected": NaN}'
+    document_path.write_text(serialized, encoding='utf-8')
+    result = subprocess.run(
+        [
+            '/bin/bash', '--noprofile', '--norc', '-p', '-c',
+            f'{helper}\n'
+            'VERSION=v2.0.0\n'
+            f'ASSET={archive_name}\n'
+                f'VERIFIED_ASSETS={verified}\n'
+                'RELEASE_REST_ID=123\n'
+                'RELEASE_ASSET_MANIFEST="$EXPECTED_MANIFEST"\n'
+                'RELEASE_PUBLISHED_AT=2026-08-23T08:00:00Z\n'
+                'anonymous_latest_release_id "$1"\n',
+            '_', os.fspath(document_path),
+        ],
+        env={**os.environ, 'EXPECTED_MANIFEST': expected_manifest},
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=2,
+    )
+
+    assert (result.returncode == 0) is (mutation == 'none'), result.stderr
+    assert result.stdout == ('123\n' if mutation == 'none' else '')
+
+
+def test_release_incomplete_evidence_records_ids_digests_and_public_verification(
+    tmp_path,
+):
+    runbook = (ROOT / 'references/releasing.md').read_text(encoding='utf-8')
+    helpers = '\n'.join(
+        _extract_release_function(runbook, name)
+        for name in ('sha256_of_file', 'prepare_incomplete_release_evidence')
+    )
+    evidence_directory = tmp_path / 'evidence'
+    verified_assets = tmp_path / 'verified-assets'
+    evidence_directory.mkdir(mode=0o700)
+    verified_assets.mkdir(mode=0o700)
+    evidence_directory.chmod(0o700)
+    verified_assets.chmod(0o700)
+    archive_name = 'google-search-v2.0.0.tar'
+    payloads = {
+        'SHA256SUMS': b'checksums\n',
+        'SHA256SUMS.asc': b'signature\n',
+        archive_name: b'archive bytes\n',
+    }
+    ids = {'SHA256SUMS': 101, 'SHA256SUMS.asc': 102, archive_name: 103}
+    manifest_rows = []
+    for name, payload in payloads.items():
+        path = verified_assets / name
+        path.write_bytes(payload)
+        path.chmod(0o600)
+        manifest_rows.append(
+            f'{name}|{ids[name]}|{len(payload)}|'
+            f'sha256:{hashlib.sha256(payload).hexdigest()}'
+        )
+    manifest = '\n'.join(manifest_rows)
+    evidence_file = evidence_directory / 'google-search-v2.0.0.txt'
+    commit = 'a' * 40
+    tag_object = 'b' * 40
+    script = f'''{helpers}
+prepare_release_evidence_target() {{
+  [ -d "$EVIDENCE_DIRECTORY" ] && [ ! -L "$EVIDENCE_DIRECTORY" ] || return 1
+  command_output_is_exact "$CURRENT_UID:700" \
+    stat -c '%u:%a' -- "$EVIDENCE_DIRECTORY" || return 1
+  [ ! -e "$EVIDENCE_FILE" ] && [ ! -L "$EVIDENCE_FILE" ]
+}}
+command_output_is_exact() {{
+  expected="$1"
+  shift
+  observed="$("$@")" || return 1
+  [ "$observed" = "$expected" ]
+}}
+set_release_signal_traps() {{ :; }}
+umask 077
+CURRENT_UID="$(id -u)"
+REPOSITORY=longlannet/google-search
+VERSION=v2.0.0
+ASSET={archive_name}
+COMMIT={commit}
+LOCAL_TAG_OBJECT={tag_object}
+REMOTE_TAG_OBJECT={tag_object}
+REMOTE_TAG_COMMIT={commit}
+MAIN_RUN_ID=424241
+TAG_RUN_ID=424242
+RELEASE_REST_ID=123
+RELEASE_DATABASE_ID=123
+RELEASE_PUBLISHED_AT=2026-08-23T08:00:00Z
+RELEASE_ASSET_MANIFEST="$EXPECTED_MANIFEST"
+ANONYMOUS_LATEST_RELEASE_ID=123
+SIGNING_FINGERPRINT=C678256ACBFC6491BF5076655F3AE24999921FFC
+VERIFIED_ASSETS={verified_assets}
+EVIDENCE_DIRECTORY={evidence_directory}
+EVIDENCE_FILE={evidence_file}
+EVIDENCE_TEMP=
+EVIDENCE_COMPLETION_APPENDED=0
+EVIDENCE_RECOVERY_READY=0
+prepare_incomplete_release_evidence
+status=$?
+if [ "$status" -eq 0 ]; then
+  printf '%s\\n' "$EVIDENCE_TEMP"
+  printf 'ready=%s\\n' "$EVIDENCE_RECOVERY_READY"
+fi
+exit "$status"
+'''
+    result = subprocess.run(
+        ['/bin/bash', '--noprofile', '--norc', '-p', '-c', script],
+        env={**os.environ, 'EXPECTED_MANIFEST': manifest},
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, (result.stdout, result.stderr)
+    evidence_path, recovery_state = result.stdout.splitlines()
+    assert recovery_state == 'ready=1'
+    evidence_temp = Path(evidence_path)
+    assert evidence_temp.parent == evidence_directory
+    assert re.fullmatch(
+        r'\.google-search-v2\.0\.0\.evidence\.[A-Za-z0-9]{8}',
+        evidence_temp.name,
+    )
+    metadata = evidence_temp.stat()
+    assert stat.S_IMODE(metadata.st_mode) == 0o600
+    assert metadata.st_nlink == 1
+    lines = evidence_temp.read_text(encoding='utf-8').splitlines()
+    expected_lines = {
+        'repository=longlannet/google-search',
+        'version=v2.0.0',
+        f'commit={commit}',
+        f'remote_main={commit}',
+        f'local_tag_object={tag_object}',
+        f'remote_tag_object={tag_object}',
+        f'remote_tag_commit={commit}',
+        'main_run_id=424241',
+        'tag_run_id=424242',
+        'release_rest_id=123',
+        'release_database_id=123',
+        'release_published_at=2026-08-23T08:00:00Z',
+        'anonymous_latest_release_id=123',
+        'attestation_verified=true',
+        'versioned_public_assets_verified=true',
+        'anonymous_latest_verified=true',
+    }
+    assert expected_lines <= set(lines)
+    for name, payload in payloads.items():
+        digest = hashlib.sha256(payload).hexdigest()
+        assert f'asset_{name}_sha256={digest}' in lines
+        assert f'release_asset_{name}_id={ids[name]}' in lines
+        assert f'release_asset_{name}_size={len(payload)}' in lines
+        assert f'release_asset_{name}_digest=sha256:{digest}' in lines
+    verified_at = next(
+        line.removeprefix('public_verification_completed_at=')
+        for line in lines
+        if line.startswith('public_verification_completed_at=')
+    )
+    assert re.fullmatch(
+        r'[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z',
+        verified_at,
+    )
+    assert 'temporary_paths_removed=true' not in lines
+    assert 'original_github_account_restored=true' not in lines
+    assert 'publication_locks_released=true' not in lines
+    assert 'complete=true' not in lines
+    assert not evidence_file.exists()
+
+
+@pytest.mark.parametrize(
+    ('scenario', 'expected_success'),
+    (
+        ('success', True),
+        ('existing-final', False),
+        ('account-not-restored', False),
+        ('checkout-not-removed', False),
+        ('verified-assets-not-cleared', False),
+        ('lock-not-released', False),
+        ('lock-identity-not-cleared', False),
+        ('atomic-status-9-without-final', False),
+        ('post-link-fsync-failure', False),
+        ('post-unlink-fsync-failure', False),
+    ),
+)
+def test_release_completed_evidence_is_atomic_non_overwriting_and_rolls_back_uncertainty(
+    tmp_path,
+    scenario,
+    expected_success,
+):
+    runbook = (ROOT / 'references/releasing.md').read_text(encoding='utf-8')
+    atomic = _extract_release_function(runbook, 'atomic_publish_completed_evidence')
+    if scenario == 'post-link-fsync-failure':
+        needle = (
+            '    os.fsync(directory_fd)\n'
+            '    os.unlink(temporary_name, dir_fd=directory_fd)'
+        )
+        assert atomic.count(needle) == 1
+        atomic = atomic.replace(
+            needle,
+            '    raise OSError(\"injected post-link fsync failure\")\n'
+            '    os.unlink(temporary_name, dir_fd=directory_fd)',
+        )
+    elif scenario == 'post-unlink-fsync-failure':
+        needle = '    os.fsync(directory_fd)\nexcept BaseException:'
+        assert atomic.count(needle) == 1
+        atomic = atomic.replace(
+            needle,
+            '    raise OSError(\"injected post-unlink fsync failure\")\n'
+            'except BaseException:',
+        )
+    finalize = _extract_release_function(runbook, 'finalize_completed_release_evidence')
+    evidence_directory = tmp_path / 'evidence'
+    evidence_directory.mkdir(mode=0o700)
+    evidence_directory.chmod(0o700)
+    evidence_temp = evidence_directory / '.google-search-v2.0.0.evidence.ABCDEFGH'
+    evidence_temp.write_text('repository=longlannet/google-search\n', encoding='utf-8')
+    evidence_temp.chmod(0o600)
+    evidence_file = evidence_directory / 'google-search-v2.0.0.txt'
+    if scenario == 'existing-final':
+        evidence_file.write_text('existing-conflict\n', encoding='utf-8')
+        evidence_file.chmod(0o600)
+    overrides = ''
+    if scenario == 'atomic-status-9-without-final':
+        overrides = 'atomic_publish_completed_evidence() { return 9; }\n'
+    account_switched = '1' if scenario == 'account-not-restored' else '0'
+    release_checkout = '/tmp/unremoved-checkout' if scenario == 'checkout-not-removed' else ''
+    verified_assets = (
+        '/tmp/unremoved-verified-assets'
+        if scenario == 'verified-assets-not-cleared'
+        else ''
+    )
+    gh_lock = '/tmp/unreleased-gh-lock' if scenario == 'lock-not-released' else ''
+    gh_lock_identity = '1:1' if scenario in {
+        'lock-not-released',
+        'lock-identity-not-cleared',
+    } else ''
+    trap_marker = tmp_path / 'signal-traps-restored'
+    script = f'''{atomic}
+{finalize}
+{overrides}command_output_is_exact() {{
+  expected="$1"
+  shift
+  observed="$("$@")" || return 1
+  [ "$observed" = "$expected" ]
+}}
+set_release_signal_traps() {{
+  printf 'restored\\n' >"$TRAP_MARKER"
+}}
+CURRENT_UID="$(id -u)"
+EVIDENCE_DIRECTORY={evidence_directory}
+EVIDENCE_TEMP={evidence_temp}
+EVIDENCE_FILE={evidence_file}
+EVIDENCE_COMPLETION_APPENDED=0
+EVIDENCE_RECOVERY_READY=1
+PUBLIC=
+VERIFY=
+VERIFIED_ASSETS={verified_assets}
+STAGE=
+FRESH_KEYRING=
+CANARY=
+AUDITED_DIRECTORY=
+RELEASE_CHECKOUT={release_checkout}
+GH_ACCOUNT_SWITCHED={account_switched}
+GH_AUTH_LOCK={gh_lock}
+GH_AUTH_LOCK_IDENTITY={gh_lock_identity}
+PUBLICATION_LOCK=
+PUBLICATION_LOCK_IDENTITY=
+finalize_completed_release_evidence
+'''
+    result = subprocess.run(
+        ['/bin/bash', '--noprofile', '--norc', '-p', '-c', script],
+        env={**os.environ, 'TRAP_MARKER': os.fspath(trap_marker)},
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert (result.returncode == 0) is expected_success, (result.stdout, result.stderr)
+    assert evidence_temp.exists() is (not expected_success)
+    if scenario == 'existing-final':
+        assert evidence_file.read_text(encoding='utf-8') == 'existing-conflict\n'
+    else:
+        assert evidence_file.exists() is expected_success
+    if expected_success:
+        metadata = evidence_file.stat()
+        assert stat.S_IMODE(metadata.st_mode) == 0o600
+        assert metadata.st_nlink == 1
+        lines = evidence_file.read_text(encoding='utf-8').splitlines()
+        cleanup_lines = [
+            'temporary_paths_removed=true',
+            'original_github_account_restored=true',
+            'publication_locks_released=true',
+        ]
+        positions = [lines.index(line) for line in cleanup_lines]
+        positions.append(next(
+            index for index, line in enumerate(lines) if line.startswith('completed_at=')
+        ))
+        positions.append(lines.index('complete=true'))
+        assert positions == sorted(positions)
+        assert lines[-1] == 'complete=true'
+        assert trap_marker.read_text(encoding='utf-8') == 'restored\n'
+    else:
+        metadata = evidence_temp.stat()
+        assert stat.S_IMODE(metadata.st_mode) == 0o600
+        assert metadata.st_nlink == 1
+        assert evidence_temp.read_text(encoding='utf-8').startswith(
+            'repository=longlannet/google-search\n'
+        )
+        assert not trap_marker.exists()
+
+
+@pytest.mark.parametrize(
+    ('mutation', 'expected_removed'),
+    (
+        ('symlink-archive', True),
+        ('writable-archive', True),
+        ('hardlinked-archive', True),
+        ('unsafe-directory', False),
+    ),
+)
+def test_release_audited_directory_is_registered_before_archive_validation(
+    mutation,
+    expected_removed,
+):
+    runbook = (ROOT / 'references/releasing.md').read_text(encoding='utf-8')
+    helpers = '\n'.join(
+        [_release_shell_prelude(runbook)]
+        + [
+            _extract_release_function(runbook, name)
+            for name in (
+                'private_release_directory_path_is_valid',
+                'remove_private_release_directory',
+                'cleanup_release_state',
+            )
+        ]
+    )
+    snippet_start = runbook.index(
+        'AUDITED_ARCHIVE="${AUDITED_ARCHIVE:?set the path printed by the audited recipe}"'
+    )
+    snippet_end = runbook.index('\n\nSERPER_CONFIG_SOURCE=', snippet_start)
+    snippet = runbook[snippet_start:snippet_end]
+    directory = Path(subprocess.run(
+        ['/usr/bin/mktemp', '-d', '/tmp/google-search-release.XXXXXXXX'],
+        text=True,
+        capture_output=True,
+        check=True,
+    ).stdout.strip())
+    commit = 'a' * 40
+    archive = directory / f'google-search-{commit}.tar'
+    try:
+        if mutation == 'symlink-archive':
+            target = directory / 'payload'
+            target.write_bytes(b'candidate\n')
+            archive.symlink_to(target.name)
+        else:
+            archive.write_bytes(b'candidate\n')
+            archive.chmod(0o600)
+            if mutation == 'writable-archive':
+                archive.chmod(0o620)
+            elif mutation == 'hardlinked-archive':
+                os.link(archive, directory / 'second-link')
+            elif mutation == 'unsafe-directory':
+                directory.chmod(0o750)
+        script = f'''set -euo pipefail
+{helpers}
+VERSION=v2.0.0
+COMMIT={commit}
+FRESH_KEYRING=
+PUBLIC=
+VERIFY=
+VERIFIED_ASSETS=
+STAGE=
+CANARY=
+AUDITED_DIRECTORY=
+RELEASE_CHECKOUT=
+EVIDENCE_TEMP=
+GH_ACCOUNT_SWITCHED=0
+ORIGINAL_GH_ACCOUNT=
+GH_AUTH_LOCK=
+GH_AUTH_LOCK_IDENTITY=
+GH_AUTH_LOCK_TARGET=/tmp/unused-gh-lock
+PUBLICATION_LOCK=
+PUBLICATION_LOCK_IDENTITY=
+PUBLICATION_LOCK_TARGET=/tmp/unused-publication-lock
+trap cleanup_release_state EXIT
+AUDITED_ARCHIVE="$1"
+{snippet}
+'''
+        result = subprocess.run(
+            ['/bin/bash', '--noprofile', '--norc', '-p', '-c', script, '_', os.fspath(archive)],
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        assert result.returncode != 0, result.stdout
+        assert (not directory.exists()) is expected_removed
+    finally:
+        if directory.exists():
+            directory.chmod(0o700)
+            shutil.rmtree(directory)
 
 
 def test_release_runbook_bash_blocks_are_syntax_and_shellcheck_clean():
@@ -1966,7 +4022,7 @@ def test_release_tmp_guard_requires_canonical_root_owned_sticky_tmp(tmp_path):
     runbook = (ROOT / 'references/releasing.md').read_text(encoding='utf-8')
     start = runbook.index('release_tmp_directory_is_safe() {')
     end = runbook.index('\n}\nrelease_tmp_directory_is_safe /tmp', start) + 3
-    helper = runbook[start:end]
+    helper = _release_shell_prelude(runbook) + '\n' + runbook[start:end]
     actual_tmp = subprocess.run(
         ['/bin/bash', '-c', f'{helper}\nrelease_tmp_directory_is_safe /tmp'],
         text=True,
@@ -2008,9 +4064,7 @@ def test_release_trusted_git_rejects_redirected_or_unsafe_metadata(tmp_path, mut
         pytest.skip('foreign-owned Git metadata requires root')
 
     runbook = (ROOT / 'references/releasing.md').read_text(encoding='utf-8')
-    start = runbook.index('assert_git_local_config_safe() {')
-    end = runbook.index('\n}\ntrusted_remote_git()', start) + 3
-    helper = runbook[start:end]
+    helper = _release_git_helpers(runbook)
     repository = tmp_path / 'repository'
     repository.mkdir()
     remote_url = 'https://github.com/longlannet/google-search.git'
@@ -2161,9 +4215,7 @@ def test_release_trusted_git_rejects_redirected_or_unsafe_metadata(tmp_path, mut
 
 def test_release_trusted_git_disables_repository_hooks_and_fsmonitor(tmp_path):
     runbook = (ROOT / 'references/releasing.md').read_text(encoding='utf-8')
-    start = runbook.index('assert_git_local_config_safe() {')
-    end = runbook.index('\n}\ntrusted_remote_git()', start) + 3
-    helper = runbook[start:end]
+    helper = _release_git_helpers(runbook)
     repository = tmp_path / 'repository'
     fsmonitor = tmp_path / 'hostile-fsmonitor'
     hook_marker = tmp_path / 'hook-ran'
@@ -2317,9 +4369,19 @@ def _cleanup_test_gpg_home(home):
 )
 def test_release_gpg_agent_cleanup_is_bounded_idempotent_and_home_scoped(tmp_path):
     runbook = (ROOT / 'references/releasing.md').read_text(encoding='utf-8')
-    start = runbook.index('private_release_directory_path_is_valid() {')
-    end = runbook.index('\n}\ncleanup_release_state()', start) + 3
-    helpers = runbook[start:end]
+    helpers = '\n'.join(
+        [_release_shell_prelude(runbook)]
+        + [
+            _extract_release_function(runbook, name)
+            for name in (
+                'private_release_directory_path_is_valid',
+                'private_gnupg_home_is_safe',
+                'private_gpg_socket_directory_is_safe',
+                'stop_private_gpg_agent',
+                'remove_private_release_directory',
+            )
+        ]
+    )
 
     empty_home = Path(subprocess.run(
         ['/usr/bin/mktemp', '-d', '/tmp/google-search-release-gnupg.XXXXXXXX'],
@@ -2714,11 +4776,7 @@ def test_release_transport_guard_rejects_every_effective_http_config(
     config_value,
 ):
     runbook = (ROOT / 'references/releasing.md').read_text(encoding='utf-8')
-    trusted_start = runbook.index('assert_git_local_config_safe() {')
-    trusted_end = runbook.index('\n}\ntrusted_remote_git()', trusted_start) + 3
-    start = runbook.index('assert_git_transport_config_safe() {')
-    end = runbook.index('\n}\nCOMMIT="$(trusted_git rev-parse', start) + 3
-    helpers = runbook[trusted_start:trusted_end] + '\n' + runbook[start:end]
+    helpers = _release_git_helpers(runbook, remote=True)
     repository = tmp_path / 'repository'
     repository.mkdir()
     environment = {
@@ -2767,10 +4825,7 @@ def test_release_transport_guard_rejects_every_effective_http_config(
 
 def test_release_remote_git_never_follows_ambient_tags_or_push_options(tmp_path):
     runbook = (ROOT / 'references/releasing.md').read_text(encoding='utf-8')
-    start = runbook.index('assert_git_local_config_safe() {')
-    guard_start = runbook.index('assert_git_transport_config_safe() {', start)
-    end = runbook.index('\n}\nCOMMIT="$(trusted_git rev-parse', guard_start) + 3
-    helpers = runbook[start:end]
+    helpers = _release_git_helpers(runbook, remote=True)
     assert helpers.count('-c protocol.https.allow=always') == 1
     helpers = helpers.replace(
         '-c protocol.https.allow=always',
@@ -2892,10 +4947,7 @@ def test_release_remote_git_never_follows_ambient_tags_or_push_options(tmp_path)
 
 def test_release_atomic_tag_push_rejects_tag_when_main_already_advanced(tmp_path):
     runbook = (ROOT / 'references/releasing.md').read_text(encoding='utf-8')
-    start = runbook.index('assert_git_local_config_safe() {')
-    guard_start = runbook.index('assert_git_transport_config_safe() {', start)
-    end = runbook.index('\n}\nCOMMIT="$(trusted_git rev-parse', guard_start) + 3
-    helpers = runbook[start:end]
+    helpers = _release_git_helpers(runbook, remote=True)
     assert helpers.count('-c protocol.https.allow=always') == 1
     helpers = helpers.replace(
         '-c protocol.https.allow=always',
@@ -3021,10 +5073,7 @@ def test_release_atomic_tag_push_rejects_tag_when_main_already_advanced(tmp_path
 
 def test_release_local_config_guard_blocks_alternate_refs_command(tmp_path):
     runbook = (ROOT / 'references/releasing.md').read_text(encoding='utf-8')
-    start = runbook.index('assert_git_local_config_safe() {')
-    guard_start = runbook.index('assert_git_transport_config_safe() {', start)
-    end = runbook.index('\n}\nCOMMIT="$(trusted_git rev-parse', guard_start) + 3
-    helpers = runbook[start:end]
+    helpers = _release_git_helpers(runbook, remote=True)
     assert helpers.count('-c protocol.https.allow=always') == 1
     helpers = helpers.replace(
         '-c protocol.https.allow=always',

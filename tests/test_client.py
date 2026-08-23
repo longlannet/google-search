@@ -609,7 +609,7 @@ def test_config_rejects_fifo_without_blocking(tmp_path):
     )
 
     completed = subprocess.run(
-        [sys.executable, '-c', probe, str(config)],
+        [sys.executable, '-B', '-c', probe, str(config)],
         check=False,
         capture_output=True,
         text=True,

@@ -694,6 +694,7 @@ def test_private_result_reader_rejects_fifo_without_blocking(tmp_path):
         [
             sys.executable,
             '-I',
+            '-B',
             str(SCRIPTS_DIR / 'check_protocol.py'),
             'result',
             '--path',
@@ -745,6 +746,7 @@ def _run_real_pytest_protocol(base_dir, required_version='9.1.1'):
         [
             sys.executable,
             '-I',
+            '-B',
             str(SCRIPTS_DIR / 'check_protocol.py'),
             'pytest',
             '--base-dir',

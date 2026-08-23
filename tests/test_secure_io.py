@@ -211,7 +211,7 @@ def test_secure_io_cli_reads_stdin_and_rejects_unknown_args(tmp_path):
     environment = os.environ.copy()
     environment['TMPDIR'] = str(tmp_path)
     result = subprocess.run(
-        [sys.executable, str(SCRIPTS_DIR / 'secure_io.py'), '--path', str(target)],
+        [sys.executable, '-B', str(SCRIPTS_DIR / 'secure_io.py'), '--path', str(target)],
         input='payload', text=True, capture_output=True, env=environment, check=False,
     )
     assert result.returncode == 0, result.stderr
@@ -219,7 +219,7 @@ def test_secure_io_cli_reads_stdin_and_rejects_unknown_args(tmp_path):
     assert stat.S_IMODE(target.stat().st_mode) == 0o600
 
     unknown = subprocess.run(
-        [sys.executable, str(SCRIPTS_DIR / 'secure_io.py'), '--unknown'],
+        [sys.executable, '-B', str(SCRIPTS_DIR / 'secure_io.py'), '--unknown'],
         input='', text=True, capture_output=True, env=environment, check=False,
     )
     assert unknown.returncode == 2
