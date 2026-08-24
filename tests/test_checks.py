@@ -3,6 +3,7 @@ import os
 import subprocess
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import Mock
 
 import pytest
@@ -822,6 +823,242 @@ def test_real_pytest_protocol_proves_collection_execution_and_sessionfinish(tmp_
     assert result.returncode == 0, result.stderr
     assert result.stdout == check_protocol.PYTEST_SENTINEL + '\n'
     assert marker.read_text(encoding='utf-8') == 'yes'
+
+
+def test_real_pytest_protocol_reports_only_safe_failure_identity(tmp_path):
+    secret = 'assertion-secret::tail-must-not-leak'
+    tests_dir = tmp_path / 'tests'
+    tests_dir.mkdir()
+    (tests_dir / 'test_failure.py').write_text(
+        'import sys\n'
+        'import pytest\n'
+        f'@pytest.mark.parametrize("value", [{secret!r}])\n'
+        'def test_failure(value):\n'
+        '    print(value)\n'
+        '    sys.stderr.write(value)\n'
+        '    assert False, value\n',
+        encoding='utf-8',
+    )
+
+    result = _run_real_pytest_protocol(tmp_path)
+
+    assert result.returncode == 1
+    assert result.stdout == ''
+    assert result.stderr.count('\n') == 1
+    assert secret not in result.stderr
+    assert 'AssertionError' not in result.stderr
+    prefix = check_protocol.PYTEST_FAILURE_PREFIX.decode('ascii')
+    assert result.stderr.startswith(prefix)
+    assert json.loads(result.stderr.removeprefix(prefix)) == {
+        'kind': 'test',
+        'nodeid': 'tests/test_failure.py::test_failure[parameters-redacted]',
+        'phase': 'call',
+    }
+
+
+def test_real_pytest_protocol_reports_collection_identity_without_exception_text(tmp_path):
+    secret = 'collection-secret-must-not-leak'
+    tests_dir = tmp_path / 'tests'
+    tests_dir.mkdir()
+    (tests_dir / 'test_collection.py').write_text(
+        f'raise RuntimeError({secret!r})\n',
+        encoding='utf-8',
+    )
+
+    result = _run_real_pytest_protocol(tmp_path)
+
+    assert result.returncode == 1
+    assert result.stdout == ''
+    assert result.stderr.count('\n') == 1
+    assert secret not in result.stderr
+    assert 'RuntimeError' not in result.stderr
+    prefix = check_protocol.PYTEST_FAILURE_PREFIX.decode('ascii')
+    assert result.stderr.startswith(prefix)
+    assert json.loads(result.stderr.removeprefix(prefix)) == {
+        'kind': 'collect',
+        'nodeid': 'tests/test_collection.py',
+        'phase': 'collect',
+    }
+
+
+def test_real_pytest_internal_error_suppresses_fallback_traceback(tmp_path):
+    secret = 'internal-error-secret-must-not-leak'
+    probe = (
+        'import importlib.util\n'
+        'import os\n'
+        'from pathlib import Path\n'
+        'import pytest\n'
+        f'path = Path({str(SCRIPTS_DIR / "check_protocol.py")!r})\n'
+        'spec = importlib.util.spec_from_file_location("check_protocol_probe", path)\n'
+        'module = importlib.util.module_from_spec(spec)\n'
+        'spec.loader.exec_module(module)\n'
+        'class Bomb:\n'
+        '    def pytest_sessionstart(self, session):\n'
+        f'        raise RuntimeError({secret!r})\n'
+        'plugin = module._PytestCompletionPlugin(set())\n'
+        'exit_code = pytest.main([\n'
+        '    "-c", os.devnull, "-p", "no:terminal", "-p", "no:cacheprovider"\n'
+        '], plugins=[plugin, Bomb()])\n'
+        'try:\n'
+        '    plugin.validate(pytest, exit_code)\n'
+        'except module.PytestDiagnosticError as error:\n'
+        '    os.write(2, error.diagnostics)\n'
+        '    raise SystemExit(1)\n'
+        'raise SystemExit(0)\n'
+    )
+    environment = os.environ.copy()
+    environment.pop('PYTEST_ADDOPTS', None)
+    environment.pop('PYTEST_PLUGINS', None)
+    environment['PYTEST_DISABLE_PLUGIN_AUTOLOAD'] = '1'
+
+    result = subprocess.run(
+        [sys.executable, '-I', '-B', '-c', probe],
+        cwd=tmp_path,
+        text=True,
+        capture_output=True,
+        check=False,
+        env=environment,
+        timeout=30,
+    )
+
+    assert result.returncode == 1
+    assert result.stdout == ''
+    assert result.stderr.count('\n') == 1
+    assert secret not in result.stderr
+    assert 'INTERNALERROR' not in result.stderr
+    assert 'RuntimeError' not in result.stderr
+    prefix = check_protocol.PYTEST_FAILURE_PREFIX.decode('ascii')
+    assert result.stderr.startswith(prefix)
+    assert json.loads(result.stderr.removeprefix(prefix)) == {
+        'kind': 'internal',
+        'phase': 'session',
+    }
+
+
+def test_real_pytest_protocol_rejects_internal_error_with_success_exit(tmp_path):
+    secret = 'handled-internal-secret-must-not-leak'
+    test_file = tmp_path / 'test_pass.py'
+    test_file.write_text('def test_pass():\n    pass\n', encoding='utf-8')
+    probe = (
+        'import importlib.util\n'
+        'import os\n'
+        'from pathlib import Path\n'
+        'import pytest\n'
+        f'protocol_path = Path({str(SCRIPTS_DIR / "check_protocol.py")!r})\n'
+        f'test_path = Path({str(test_file)!r}).resolve()\n'
+        'spec = importlib.util.spec_from_file_location("check_protocol_probe", protocol_path)\n'
+        'module = importlib.util.module_from_spec(spec)\n'
+        'spec.loader.exec_module(module)\n'
+        'class Notify:\n'
+        '    @pytest.hookimpl(trylast=True)\n'
+        '    def pytest_sessionfinish(self, session, exitstatus):\n'
+        '        try:\n'
+        f'            raise RuntimeError({secret!r})\n'
+        '        except RuntimeError:\n'
+        '            session.config.notify_exception(pytest.ExceptionInfo.from_current())\n'
+        'plugin = module._PytestCompletionPlugin({test_path})\n'
+        'exit_code = pytest.main([\n'
+        '    str(test_path), "-c", os.devnull, f"--rootdir={test_path.parent}",\n'
+        '    "-p", "no:terminal", "-p", "no:cacheprovider", "--noconftest",\n'
+        '    "--import-mode=importlib"\n'
+        '], plugins=[plugin, Notify()])\n'
+        'if exit_code is not pytest.ExitCode.OK:\n'
+        '    raise SystemExit(9)\n'
+        'try:\n'
+        '    plugin.validate(pytest, exit_code)\n'
+        'except module.PytestDiagnosticError as error:\n'
+        '    os.write(2, error.diagnostics)\n'
+        '    raise SystemExit(1)\n'
+        'raise SystemExit(0)\n'
+    )
+    environment = os.environ.copy()
+    environment.pop('PYTEST_ADDOPTS', None)
+    environment.pop('PYTEST_PLUGINS', None)
+    environment['PYTEST_DISABLE_PLUGIN_AUTOLOAD'] = '1'
+
+    result = subprocess.run(
+        [sys.executable, '-I', '-B', '-c', probe],
+        cwd=tmp_path,
+        text=True,
+        capture_output=True,
+        check=False,
+        env=environment,
+        timeout=30,
+    )
+
+    assert result.returncode == 1
+    assert result.stdout == ''
+    assert result.stderr.count('\n') == 1
+    assert secret not in result.stderr
+    assert 'INTERNALERROR' not in result.stderr
+    assert 'RuntimeError' not in result.stderr
+    prefix = check_protocol.PYTEST_FAILURE_PREFIX.decode('ascii')
+    assert result.stderr.startswith(prefix)
+    assert json.loads(result.stderr.removeprefix(prefix)) == {
+        'kind': 'internal',
+        'phase': 'session',
+    }
+
+
+def test_pytest_failure_diagnostics_are_ascii_redacted_and_bounded():
+    secret = 'parameter-secret::tail-must-not-leak'
+    plugin = check_protocol._PytestCompletionPlugin(set())
+    long_name = 'test_' + ('x' * 5_000) + '\x1b\u202e'
+    for index in range(check_protocol.MAX_PYTEST_FAILURE_RECORDS + 7):
+        plugin.pytest_runtest_logreport(SimpleNamespace(
+            failed=True,
+            when='call',
+            nodeid=f'tests/test_{index}.py::{long_name}[{secret}]',
+            longrepr=secret,
+            capstdout=secret,
+            capstderr=secret,
+        ))
+
+    diagnostics = plugin._diagnostics()
+    lines = diagnostics.splitlines(keepends=True)
+
+    assert len(diagnostics) <= check_protocol.MAX_PYTEST_DIAGNOSTIC_BYTES
+    assert all(len(line) <= check_protocol.MAX_PYTEST_DIAGNOSTIC_LINE_BYTES for line in lines)
+    assert all(byte == 0x0A or 0x20 <= byte <= 0x7E for byte in diagnostics)
+    assert secret.encode() not in diagnostics
+    assert len(lines) == check_protocol.MAX_PYTEST_FAILURE_RECORDS + 1
+    for line in lines[:-1]:
+        assert line.startswith(check_protocol.PYTEST_FAILURE_PREFIX)
+        payload = json.loads(line.removeprefix(check_protocol.PYTEST_FAILURE_PREFIX))
+        assert payload['kind'] == 'test'
+        assert payload['phase'] == 'call'
+        assert payload['truncated'] is True
+        assert payload['nodeidPrefix'].startswith('tests/test_')
+        assert len(payload['nodeidSha256']) == 64
+    summary = json.loads(lines[-1].removeprefix(
+        check_protocol.PYTEST_FAILURES_TRUNCATED_PREFIX
+    ))
+    assert summary == {
+        'omitted': 7,
+        'total': check_protocol.MAX_PYTEST_FAILURE_RECORDS + 7,
+    }
+
+
+def test_pytest_failure_diagnostics_reserve_summary_within_total_budget(monkeypatch):
+    plugin = check_protocol._PytestCompletionPlugin(set())
+    for index in range(12):
+        plugin._record_failure(
+            kind='test',
+            phase='call',
+            nodeid=f'tests/test_{index}.py::test_{"x" * 400}',
+        )
+    monkeypatch.setattr(check_protocol, 'MAX_PYTEST_DIAGNOSTIC_BYTES', 1_024)
+
+    diagnostics = plugin._diagnostics()
+    lines = diagnostics.splitlines(keepends=True)
+    summary = json.loads(lines[-1].removeprefix(
+        check_protocol.PYTEST_FAILURES_TRUNCATED_PREFIX
+    ))
+
+    assert len(diagnostics) <= 1_024
+    assert summary['total'] == 12
+    assert summary['omitted'] == 12 - (len(lines) - 1)
+    assert summary['omitted'] > 0
 
 
 def test_real_pytest_protocol_does_not_prepend_the_repository_to_imports(tmp_path):

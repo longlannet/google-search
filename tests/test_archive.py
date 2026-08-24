@@ -806,7 +806,12 @@ def test_isolated_commit_archive_strictly_fscks_reachable_objects(tmp_path):
     commit = _git(git, repository, 'rev-parse', 'HEAD', text=True).strip()
     blob = _git(git, repository, 'rev-parse', 'HEAD:payload.txt', text=True).strip()
     object_path = repository / '.git' / 'objects' / blob[:2] / blob[2:]
-    object_path.write_bytes(b'corrupt object')
+    original_mode = stat.S_IMODE(object_path.stat().st_mode)
+    object_path.chmod(original_mode | stat.S_IWUSR)
+    try:
+        object_path.write_bytes(b'corrupt object')
+    finally:
+        object_path.chmod(original_mode)
 
     with pytest.raises(subprocess.CalledProcessError) as captured:
         _isolated_commit_archive(git, repository, commit, tmp_path / 'isolated.git')
@@ -1330,16 +1335,27 @@ def test_ci_runs_the_complete_gate_with_the_matrix_local_venv():
     assert 'PIP_CONFIG_FILE: /dev/null' in workflow
     assert 'SHELLCHECK_VERSION: 0.11.0' in workflow
     assert 'SHELLCHECK_SHA256: 8c3be12b05d5c177a04c29e3c78ce89ac86f1595681cab149b65b97c4e227198' in workflow
+    shellcheck_binary_sha = '4da528ddb3a4d1b7b24a59d4e16eb2f5fd960f4bd9a3708a15baddbdf1d5a55b'
+    assert workflow.count(f'SHELLCHECK_BINARY_SHA256: {shellcheck_binary_sha}') == 2
     assert '--connect-timeout 10 --max-time 60' in workflow
     assert "printf '%s  %s\\n' \"$SHELLCHECK_SHA256\" \"$archive\" | sha256sum --check --strict -" in workflow
     assert 'pinned_shellcheck="$RUNNER_TEMP/shellcheck-bin/shellcheck"' in workflow
+    assert workflow.count(
+        'printf \'%s  %s\\n\' "$SHELLCHECK_BINARY_SHA256"'
+    ) == 2
     assert 'test "$(command -v shellcheck)" = "$pinned_shellcheck"' in workflow
     assert "grep -F 'version: 0.11.0'" in workflow
     assert '"$pinned_shellcheck" --norc -x scripts/*.sh' in workflow
     assert "' references/releasing.md | \"$pinned_shellcheck\" --norc --shell=bash -" in workflow
     assert '/usr/bin/shellcheck' not in workflow
-    assert 'run: /bin/bash -p scripts/check.sh --venv' in workflow
+    assert (
+        'run: /bin/bash -p scripts/check.sh --venv --shellcheck '
+        '"$RUNNER_TEMP/shellcheck-bin/shellcheck"'
+    ) in workflow
     assert 'run: python -m pytest' not in workflow
+    check_script = (ROOT / 'scripts/check.sh').read_text(encoding='utf-8')
+    assert f'PINNED_SHELLCHECK_SHA256="{shellcheck_binary_sha}"' in check_script
+    assert 'pinned_shellcheck_is_exact "$SHELLCHECK_PATH"' in check_script
     shellcheck_gate_start = workflow.index(
         '      - name: Require the pinned ShellCheck gate\n'
     )
@@ -2093,6 +2109,8 @@ def test_release_runbook_requires_signed_immutable_verified_publication():
     assert runbook.index(audited_candidate) < runbook.index(audited_registration)
     assert runbook.index(audited_registration) < runbook.index(archive_file_check)
     cleanup_helper = _extract_release_function(runbook, 'cleanup_release_state')
+    assert 'cd / || cleanup_status=1' in cleanup_helper
+    assert 'cd /root' not in cleanup_helper
     assert cleanup_helper.index('stop_private_gpg_agent "$FRESH_KEYRING"') < (
         cleanup_helper.index('for directory in')
     )
@@ -2171,6 +2189,11 @@ def test_release_bootstrap_cleanup_covers_failures_before_full_cleanup_trap(
             )
         ]
     )
+    bootstrap_cleanup = _extract_release_function(
+        runbook, 'cleanup_bootstrap_release_checkout'
+    )
+    assert 'if cd / && \\' in bootstrap_cleanup
+    assert 'cd /root' not in bootstrap_cleanup
     checkout = Path(subprocess.run(
         ['/usr/bin/mktemp', '-d', '/tmp/google-search-release-checkout.XXXXXXXX'],
         text=True,

@@ -47,6 +47,8 @@ PARSING_RESULT_SENTINEL="google-search-parsing-result-ok-v1"
 FULL_RESULT_SENTINEL="google-search-full-result-ok-v1"
 PROTOCOL_CAPTURE_MARKER=$'\036'
 SAFE_TMP_DIR="/tmp"
+PINNED_SHELLCHECK_VERSION="0.11.0"
+PINNED_SHELLCHECK_SHA256="4da528ddb3a4d1b7b24a59d4e16eb2f5fd960f4bd9a3708a15baddbdf1d5a55b"
 
 MODE="auto"
 ONLINE_SMOKE=0
@@ -56,6 +58,8 @@ RELEASE_ARCHIVE_ARG=""
 RELEASE_COMMIT_ARG=""
 RELEASE_ARCHIVE_SET=0
 RELEASE_COMMIT_SET=0
+SHELLCHECK_PATH=""
+SHELLCHECK_PATH_SET=0
 SELECTED_RUNTIME_TOKEN=""
 RUNNER_MODE=()
 TEMP_RESULTS=()
@@ -63,6 +67,7 @@ TEMP_RESULTS=()
 usage() {
   cat <<'EOF'
 Usage: /bin/bash -p scripts/check.sh [--system|--venv] [--online-smoke|--online-full] [--quiet]
+       [--shellcheck <absolute-pinned-binary>]
        [--release-archive <absolute-tar> --release-commit <full-oid>]
 
 By default this command is entirely offline. It validates shell syntax, Python
@@ -74,6 +79,8 @@ Options:
   --venv          Require the local .venv runtime
   --online-smoke  Additionally run smoke_test.py against Serper
   --online-full   Additionally run selfcheck.py --full against Serper
+  --shellcheck <path>
+                  Require the pinned ShellCheck 0.11.0 binary at this path
   --release-archive <path>
                   Verify this local release tar in the formal pytest protocol
   --release-commit <oid>
@@ -109,6 +116,57 @@ reportable_path() {
       *$'\342\200'[$'\216'-$'\217']*|*$'\342\200'[$'\250'-$'\256']*|\
       *$'\342\201'[$'\246'-$'\251']*) return 1 ;;
   esac
+}
+
+trusted_shellcheck_path() {
+  local path="$1"
+  local canonical current_uid metadata owner mode links parent
+  case "$path" in /*) ;; *) return 1 ;; esac
+  reportable_path "$path" || return 1
+  canonical="$(readlink -f -- "$path" 2>/dev/null)" || return 1
+  [ "$canonical" = "$path" ] || return 1
+  [ -f "$path" ] && [ ! -L "$path" ] && [ -x "$path" ] || return 1
+  current_uid="$(id -u)" || return 1
+  metadata="$(stat -c '%u|%a|%h' -- "$path" 2>/dev/null)" || return 1
+  IFS='|' read -r owner mode links <<<"$metadata"
+  [ "$owner" = "0" ] || [ "$owner" = "$current_uid" ] || return 1
+  case "$mode" in *[!0-7]*|'') return 1 ;; esac
+  [ $((8#$mode & 07022)) -eq 0 ] || return 1
+  [ "$links" = "1" ] || return 1
+
+  parent="${path%/*}"
+  [ -n "$parent" ] || parent=/
+  while :; do
+    [ -d "$parent" ] && [ ! -L "$parent" ] || return 1
+    canonical="$(readlink -m -- "$parent" 2>/dev/null)" || return 1
+    [ "$canonical" = "$parent" ] || return 1
+    metadata="$(stat -c '%u|%a' -- "$parent" 2>/dev/null)" || return 1
+    IFS='|' read -r owner mode <<<"$metadata"
+    [ "$owner" = "0" ] || [ "$owner" = "$current_uid" ] || return 1
+    case "$mode" in *[!0-7]*|'') return 1 ;; esac
+    if [ $((8#$mode & 0022)) -ne 0 ]; then
+      [ "$parent" = /tmp ] && [ "$owner" = 0 ] && [ $((8#$mode)) -eq $((01777)) ] || return 1
+    fi
+    [ "$parent" != / ] || break
+    parent="${parent%/*}"
+    [ -n "$parent" ] || parent=/
+  done
+}
+
+pinned_shellcheck_is_exact() {
+  local path="$1"
+  local digest line output version_count=0
+  trusted_shellcheck_path "$path" || return 1
+  digest="$(sha256sum -- "$path" 2>/dev/null)" || return 1
+  digest="${digest%% *}"
+  [ "$digest" = "$PINNED_SHELLCHECK_SHA256" ] || return 1
+  output="$("$path" --version 2>/dev/null)" || return 1
+  while IFS= read -r line; do
+    if [ "$line" = "version: $PINNED_SHELLCHECK_VERSION" ]; then
+      version_count=$((version_count + 1))
+    fi
+  done <<<"$output"
+  [ "$version_count" -eq 1 ]
 }
 
 cleanup() {
@@ -239,6 +297,16 @@ while [ "$#" -gt 0 ]; do
     --online-full)
       ONLINE_FULL=1
       ;;
+    --shellcheck)
+      [ "$#" -ge 2 ] || fail "--shellcheck requires a path"
+      [ "$SHELLCHECK_PATH_SET" -eq 0 ] || fail "--shellcheck may be supplied only once"
+      [ -n "$2" ] || fail "--shellcheck requires a non-empty path"
+      case "$2" in /*) ;; *) fail "--shellcheck requires an absolute path" ;; esac
+      reportable_path "$2" || fail "--shellcheck path is unsafe"
+      SHELLCHECK_PATH="$2"
+      SHELLCHECK_PATH_SET=1
+      shift
+      ;;
     --release-archive)
       [ "$#" -ge 2 ] || fail "--release-archive requires a path"
       [ "$RELEASE_ARCHIVE_SET" -eq 0 ] || fail "--release-archive may be supplied only once"
@@ -336,7 +404,15 @@ for file in "$BASE_DIR"/scripts/*.sh; do
   without_api_keys /bin/bash -p -n "$file" || fail "shell syntax check failed: $file"
 done
 
-if command -v shellcheck >/dev/null 2>&1; then
+if [ "$SHELLCHECK_PATH_SET" -eq 1 ]; then
+  log "running pinned ShellCheck"
+  without_api_keys pinned_shellcheck_is_exact "$SHELLCHECK_PATH" || \
+    fail "pinned ShellCheck validation failed"
+  without_api_keys "$SHELLCHECK_PATH" --norc -x "$BASE_DIR"/scripts/*.sh || \
+    fail "ShellCheck failed"
+  without_api_keys pinned_shellcheck_is_exact "$SHELLCHECK_PATH" || \
+    fail "pinned ShellCheck changed during lint"
+elif command -v shellcheck >/dev/null 2>&1; then
   log "running ShellCheck"
   without_api_keys shellcheck --norc -x "$BASE_DIR"/scripts/*.sh || fail "ShellCheck failed"
 else

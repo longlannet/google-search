@@ -2986,6 +2986,103 @@ def test_install_ignores_untrusted_path_python_for_json_error(tmp_path):
     assert not marker.exists()
 
 
+@pytest.mark.parametrize(
+    ('arguments', 'message'),
+    (
+        (('--shellcheck',), '--shellcheck requires a path'),
+        (('--shellcheck', ''), '--shellcheck requires a non-empty path'),
+        (('--shellcheck', 'relative-shellcheck'), '--shellcheck requires an absolute path'),
+        (
+            ('--shellcheck', '/bin/false', '--shellcheck', '/bin/false'),
+            '--shellcheck may be supplied only once',
+        ),
+    ),
+)
+def test_check_shellcheck_option_requires_one_absolute_path(tmp_path, arguments, message):
+    repo = make_test_repo(tmp_path)
+
+    result = run_command(
+        ['/bin/bash', '-p', 'scripts/check.sh', '--quiet', *arguments],
+        cwd=repo,
+    )
+
+    assert result.returncode == 1
+    assert result.stdout == ''
+    assert message in result.stderr
+
+
+def test_check_shellcheck_option_rejects_wrong_binary_hash_before_execution(tmp_path):
+    repo = make_test_repo(tmp_path)
+    create_stub_runtime(repo, with_pytest=True)
+    marker = tmp_path / 'unpinned-shellcheck-ran'
+    fake_shellcheck = tmp_path / 'shellcheck'
+    fake_shellcheck.write_text(
+        f'#!/bin/sh\ntouch {marker}\nprintf "%s\\n" "version: 0.11.0"\n',
+        encoding='utf-8',
+    )
+    fake_shellcheck.chmod(0o755)
+
+    result = run_command(
+        [
+            '/bin/bash', '-p', 'scripts/check.sh', '--venv', '--quiet',
+            '--shellcheck', str(fake_shellcheck),
+        ],
+        cwd=repo,
+        timeout=CHECK_INTEGRATION_TIMEOUT,
+    )
+
+    assert result.returncode == 1
+    assert result.stdout == ''
+    assert 'pinned ShellCheck validation failed' in result.stderr
+    assert not marker.exists()
+
+
+def test_check_pinned_shellcheck_never_inherits_api_keys(tmp_path):
+    repo = make_test_repo(tmp_path)
+    create_stub_runtime(repo, with_pytest=True)
+    leaked_keys = tmp_path / 'shellcheck-inherited-api-keys'
+    calls = tmp_path / 'shellcheck-calls'
+    fake_shellcheck = tmp_path / 'shellcheck'
+    fake_shellcheck.write_text(
+        '#!/bin/bash -p\n'
+        f'if [ "${{SERPER_API_KEY+x}}" = x ] || '
+        f'[ "${{SERPER_API_KEYS+x}}" = x ]; then touch {shlex.quote(str(leaked_keys))}; fi\n'
+        'if [ "${1:-}" = --version ]; then\n'
+        f'  printf "%s\\n" version >>{shlex.quote(str(calls))}\n'
+        f'  if [ "$(wc -l <{shlex.quote(str(calls))})" -ge 3 ]; then exit 42; fi\n'
+        '  printf "%s\\n" "ShellCheck - shell script analysis tool" "version: 0.11.0"\n'
+        'else\n'
+        f'  printf "%s\\n" lint >>{shlex.quote(str(calls))}\n'
+        'fi\n',
+        encoding='utf-8',
+    )
+    fake_shellcheck.chmod(0o755)
+    fake_digest = sha256(fake_shellcheck.read_bytes()).hexdigest()
+    check_script = repo / 'scripts' / 'check.sh'
+    source = check_script.read_text(encoding='utf-8')
+    expected_digest = '4da528ddb3a4d1b7b24a59d4e16eb2f5fd960f4bd9a3708a15baddbdf1d5a55b'
+    assert source.count(expected_digest) == 1
+    check_script.write_text(source.replace(expected_digest, fake_digest), encoding='utf-8')
+
+    result = run_command(
+        [
+            '/bin/bash', '-p', 'scripts/check.sh', '--quiet',
+            '--shellcheck', str(fake_shellcheck),
+        ],
+        cwd=repo,
+        env={
+            'SERPER_API_KEY': 'singular-key-must-not-reach-shellcheck',
+            'SERPER_API_KEYS': 'plural-keys-must-not-reach-shellcheck',
+        },
+    )
+
+    assert result.returncode == 1
+    assert result.stdout == ''
+    assert 'pinned ShellCheck changed during lint' in result.stderr
+    assert calls.read_text(encoding='utf-8').splitlines() == ['version', 'lint', 'version']
+    assert not leaked_keys.exists()
+
+
 @pytest.mark.parametrize('entrypoint', ('install.sh', 'check.sh'))
 @pytest.mark.parametrize('token', ('--bad\x1b[31moption', '--bad\u0085option', '--bad\u202eoption'))
 def test_shell_unknown_options_do_not_echo_terminal_controls(tmp_path, entrypoint, token):
@@ -3753,6 +3850,7 @@ def test_install_ignores_noop_python_from_inherited_path(tmp_path):
         ['/bin/bash', '-p', 'scripts/install.sh', '--json'],
         cwd=repo,
         env={'PATH': str(fake_bin)},
+        timeout=INSTALL_ONLINE_TIMEOUT,
     )
     assert result.returncode == 0, result.stderr
     assert json.loads(result.stdout)['ok'] is True
@@ -4118,6 +4216,63 @@ def test_check_rejects_pytest_main_that_returns_success_without_lifecycle_hooks(
         timeout=CHECK_INTEGRATION_TIMEOUT,
     )
     assert result.returncode == 1
+    assert 'pytest failed' in result.stderr
+
+
+def test_check_surfaces_only_bounded_pytest_failure_identity(tmp_path):
+    repo = make_test_repo(tmp_path)
+    python = create_stub_runtime(repo, with_pytest=True)
+    site_packages = Path(
+        subprocess.run(
+            [str(python), '-I', '-B', '-c', 'import site; print(site.getsitepackages()[0])'],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+    )
+    secret = 'pytest-diagnostic-secret-must-not-leak'
+    (site_packages / '_pytest' / 'config' / '__init__.py').write_text(
+        'from types import SimpleNamespace\n'
+        'class Config:\n    pass\n'
+        'def main(args=None, plugins=None):\n'
+        '    from pytest import ExitCode\n'
+        '    session = SimpleNamespace(items=[])\n'
+        '    for plugin in plugins or []:\n'
+        '        plugin.pytest_collection_finish(session)\n'
+        '        plugin.pytest_runtest_logreport(SimpleNamespace(\n'
+        '            failed=True, when="call",\n'
+        f'            nodeid="tests/test_stub.py::test_failure[{secret}\\x1b\\u202e]",\n'
+        f'            longrepr={secret!r}, capstdout={secret!r}, capstderr={secret!r},\n'
+        '        ))\n'
+        '        plugin.pytest_sessionfinish(session, ExitCode.TESTS_FAILED)\n'
+        '    return ExitCode.TESTS_FAILED\n',
+        encoding='utf-8',
+    )
+
+    result = run_command(
+        ['/bin/bash', '-p', 'scripts/check.sh', '--venv', '--quiet'],
+        cwd=repo,
+        env={'SERPER_API_KEY': secret, 'SERPER_API_KEYS': secret},
+        timeout=CHECK_INTEGRATION_TIMEOUT,
+    )
+
+    assert result.returncode == 1
+    assert result.stdout.startswith('AST OK: ')
+    assert 'google-search-pytest-ok-v1' not in result.stdout
+    assert secret not in result.stdout
+    assert secret not in result.stderr
+    assert 'AssertionError' not in result.stderr
+    assert '\x1b' not in result.stderr
+    diagnostic = next(
+        line for line in result.stderr.splitlines()
+        if line.startswith('[google-search] PYTEST_FAILURE_V1 ')
+    )
+    payload = json.loads(diagnostic.removeprefix('[google-search] PYTEST_FAILURE_V1 '))
+    assert payload == {
+        'kind': 'test',
+        'nodeid': 'tests/test_stub.py::test_failure[parameters-redacted]',
+        'phase': 'call',
+    }
     assert 'pytest failed' in result.stderr
 
 

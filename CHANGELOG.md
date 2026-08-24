@@ -4,7 +4,7 @@
 
 格式参考 Keep a Changelog，版本号建议遵循 Semantic Versioning（语义化版本）。
 
-## [v2.0.0] - 2026-08-23
+## [v2.0.0] - 2026-08-24
 
 ### Security
 
@@ -48,6 +48,9 @@
 
 ### Fixed
 
+- 修复测试夹具依赖 root 越权覆盖 Git `0444` loose object、发布 cleanup 硬编码进入 `/root` 的问题；同一套测试现可由 GitHub 非 root runner 原样执行
+- 正式 pytest 失败现在只向 stderr 输出有界、ASCII JSON 编码且隐藏参数值的失败 node ID 与阶段，不再因关闭 terminal reporter 只留下无定位信息的通用错误；断言、traceback 和 captured output 不进入诊断
+- CI 的完整 `check.sh` 门禁现通过显式绝对路径绑定已验证的 ShellCheck 0.11.0，并在 lint 前后复核 binary SHA-256 与安全元数据，不再额外依赖 runner 镜像内滚动版本
 - `webpage` 改用官方 `https://scrape.serper.dev` 主机；maps/reviews/autocomplete/webpage/Lens 会拒绝显式不支持的字段，reviews 当前明确为不带 `nextPageToken` 的首批查询
 - `maps-reviews` 的异常现在统一经过结构化错误输出并返回非零；批量部分失败不再以 `ok=true` 或进程 0 假成功
 - selfcheck 严格拒绝未知参数，检查 workflow 的 `allSucceeded`/`failedCount`，并让完整检查覆盖所有声明的 endpoint/workflow 分组

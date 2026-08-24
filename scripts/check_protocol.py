@@ -19,7 +19,13 @@ MAX_DEVELOPMENT_LOCK_BYTES = 4 * 1024 * 1024
 MAX_RELEASE_MANIFEST_BYTES = 4 * 1024 * 1024
 MAX_RELEASE_FILES = 10_000
 MAX_RELEASE_SOURCE_BYTES = 64 * 1024 * 1024
+MAX_PYTEST_DIAGNOSTIC_LINE_BYTES = 2 * 1024
+MAX_PYTEST_DIAGNOSTIC_BYTES = 64 * 1024
+MAX_PYTEST_FAILURE_RECORDS = 64
+MAX_PYTEST_NODEID_PREFIX_CHARS = 128
 PYTEST_SENTINEL = 'google-search-pytest-ok-v1'
+PYTEST_FAILURE_PREFIX = b'[google-search] PYTEST_FAILURE_V1 '
+PYTEST_FAILURES_TRUNCATED_PREFIX = b'[google-search] PYTEST_FAILURES_TRUNCATED_V1 '
 KEYS_SENTINEL = 'google-search-keys-ok-v1'
 RELEASE_SOURCE_SENTINEL = 'google-search-release-source-ok-v1'
 RESULT_SENTINELS = {
@@ -111,6 +117,12 @@ SHAPE_BOOLEAN_FIELDS = (
 
 class OnlineConfigError(ValueError):
     pass
+
+
+class PytestDiagnosticError(ValueError):
+    def __init__(self, diagnostics):
+        super().__init__('pytest failed with bounded diagnostics')
+        self.diagnostics = diagnostics
 
 
 def _stable_private_read(path, *, byte_limit, description):
@@ -782,6 +794,52 @@ def validate_result(payload, expected):
         raise ValueError('unknown result protocol')
 
 
+def _redact_pytest_nodeid(nodeid):
+    if not isinstance(nodeid, str) or not nodeid:
+        return '<invalid-nodeid>'
+    parameter_start = nodeid.find('[')
+    if parameter_start >= 0:
+        return nodeid[:parameter_start] + '[parameters-redacted]'
+    return nodeid
+
+
+def _pytest_diagnostic_line(*, kind, phase, nodeid=None, reason=None):
+    payload = {'kind': kind, 'phase': phase}
+    redacted_nodeid = None
+    if reason is not None:
+        payload['reason'] = reason
+    if nodeid is not None:
+        redacted_nodeid = _redact_pytest_nodeid(nodeid)
+        payload['nodeid'] = redacted_nodeid
+    encoded = PYTEST_FAILURE_PREFIX + json.dumps(
+        payload,
+        ensure_ascii=True,
+        sort_keys=True,
+        separators=(',', ':'),
+    ).encode('ascii') + b'\n'
+    if len(encoded) <= MAX_PYTEST_DIAGNOSTIC_LINE_BYTES:
+        return encoded
+
+    if redacted_nodeid is None:
+        raise ValueError('pytest diagnostic without a node ID exceeded its line limit')
+    redacted_bytes = redacted_nodeid.encode('utf-8', errors='surrogatepass')
+    payload.pop('nodeid')
+    payload.update({
+        'nodeidPrefix': redacted_nodeid[:MAX_PYTEST_NODEID_PREFIX_CHARS],
+        'nodeidSha256': hashlib.sha256(redacted_bytes).hexdigest(),
+        'truncated': True,
+    })
+    encoded = PYTEST_FAILURE_PREFIX + json.dumps(
+        payload,
+        ensure_ascii=True,
+        sort_keys=True,
+        separators=(',', ':'),
+    ).encode('ascii') + b'\n'
+    if len(encoded) > MAX_PYTEST_DIAGNOSTIC_LINE_BYTES:
+        raise ValueError('pytest diagnostic formatter exceeded its line limit')
+    return encoded
+
+
 class _PytestCompletionPlugin:
     def __init__(self, expected_files):
         self.expected_files = frozenset(expected_files)
@@ -792,6 +850,8 @@ class _PytestCompletionPlugin:
         self.finished_nodeids = []
         self.deselected_nodeids = []
         self.exit_status = None
+        self.failure_lines = []
+        self.total_failures = 0
 
     def pytest_collection_finish(self, session):
         self.collection_calls += 1
@@ -806,30 +866,81 @@ class _PytestCompletionPlugin:
         del location
         self.finished_nodeids.append(nodeid)
 
+    def pytest_runtest_logreport(self, report):
+        if report.failed:
+            phase = report.when if report.when in {'setup', 'call', 'teardown'} else 'runtest'
+            self._record_failure(kind='test', phase=phase, nodeid=report.nodeid)
+
+    def pytest_collectreport(self, report):
+        if report.failed:
+            self._record_failure(kind='collect', phase='collect', nodeid=report.nodeid)
+
+    def pytest_internalerror(self, excrepr, excinfo):
+        del excrepr, excinfo
+        self._record_failure(kind='internal', phase='session')
+        return True
+
     def pytest_sessionfinish(self, session, exitstatus):
         del session
         self.sessionfinish_calls += 1
         self.exit_status = exitstatus
 
+    def _record_failure(self, *, kind, phase, nodeid=None):
+        self.total_failures += 1
+        if len(self.failure_lines) >= MAX_PYTEST_FAILURE_RECORDS:
+            return
+        self.failure_lines.append(
+            _pytest_diagnostic_line(kind=kind, phase=phase, nodeid=nodeid)
+        )
+
+    def _diagnostics(self, reason=None):
+        lines = list(self.failure_lines)
+        if not lines:
+            lines.append(_pytest_diagnostic_line(
+                kind='session',
+                phase='session',
+                reason=reason or 'nonzero-exit-without-report',
+            ))
+
+        while True:
+            omitted = self.total_failures - len(lines)
+            summary = b''
+            if omitted > 0:
+                summary = PYTEST_FAILURES_TRUNCATED_PREFIX + json.dumps(
+                    {'omitted': omitted, 'total': self.total_failures},
+                    sort_keys=True,
+                    separators=(',', ':'),
+                ).encode('ascii') + b'\n'
+            if sum(map(len, lines)) + len(summary) <= MAX_PYTEST_DIAGNOSTIC_BYTES:
+                return b''.join(lines) + summary
+            if not lines:
+                raise ValueError('pytest diagnostic formatter exceeded its total limit')
+            lines.pop()
+
+    def _fail(self, reason):
+        raise PytestDiagnosticError(self._diagnostics(reason))
+
     def validate(self, pytest_module, returned_exit_code):
         if not isinstance(returned_exit_code, pytest_module.ExitCode):
-            raise ValueError('pytest.main returned an invalid exit-code type')
+            self._fail('invalid-exit-code')
         if returned_exit_code is not pytest_module.ExitCode.OK:
-            raise ValueError('pytest suite failed')
+            self._fail('nonzero-exit-without-report')
+        if self.total_failures:
+            self._fail('reported-failures')
         if self.collection_calls != 1 or self.sessionfinish_calls != 1:
-            raise ValueError('pytest lifecycle hooks did not complete exactly once')
+            self._fail('lifecycle-incomplete')
         if self.exit_status != pytest_module.ExitCode.OK:
-            raise ValueError('pytest sessionfinish did not report success')
+            self._fail('sessionfinish-nonzero')
         if self.deselected_nodeids:
-            raise ValueError('pytest deselected tests')
+            self._fail('tests-deselected')
         if not self.collected_nodeids or len(set(self.collected_nodeids)) != len(self.collected_nodeids):
-            raise ValueError('pytest collected no tests or duplicate node IDs')
+            self._fail('invalid-collection')
         if self.collected_files != self.expected_files:
-            raise ValueError('pytest did not collect every expected test file')
+            self._fail('incomplete-file-collection')
         if len(self.finished_nodeids) != len(self.collected_nodeids):
-            raise ValueError('pytest did not finish every collected test')
+            self._fail('unfinished-tests')
         if set(self.finished_nodeids) != set(self.collected_nodeids):
-            raise ValueError('pytest completion node IDs do not match collection')
+            self._fail('completion-mismatch')
 
 
 def _verify_pytest_distribution(required_version):
@@ -960,8 +1071,10 @@ def run_pytest_suite(base_dir, required_version):
             exit_code = pytest_module.main(args=args, plugins=[plugin])
         finally:
             os.chdir(previous_directory)
-    except BaseException as error:
-        raise ValueError(f'pytest.main raised {type(error).__name__}') from None
+    except BaseException:
+        raise PytestDiagnosticError(
+            plugin._diagnostics('pytest-main-exception')
+        ) from None
     plugin.validate(pytest_module, exit_code)
 
 
@@ -1076,5 +1189,16 @@ if __name__ == '__main__':
         raise SystemExit(main())
     except OnlineConfigError:
         raise SystemExit(2) from None
+    except PytestDiagnosticError as error:
+        diagnostics = memoryview(error.diagnostics)
+        try:
+            while diagnostics:
+                written = os.write(2, diagnostics)
+                if written <= 0:
+                    break
+                diagnostics = diagnostics[written:]
+        except OSError:
+            pass
+        raise SystemExit(1) from None
     except (ImportError, OSError, ValueError):
         raise SystemExit(1) from None

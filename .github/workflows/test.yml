@@ -205,6 +205,7 @@ jobs:
         env:
           SHELLCHECK_VERSION: 0.11.0
           SHELLCHECK_SHA256: 8c3be12b05d5c177a04c29e3c78ce89ac86f1595681cab149b65b97c4e227198
+          SHELLCHECK_BINARY_SHA256: 4da528ddb3a4d1b7b24a59d4e16eb2f5fd960f4bd9a3708a15baddbdf1d5a55b
         run: |
           set -euo pipefail
           umask 077
@@ -221,13 +222,19 @@ jobs:
             --strip-components=1 "shellcheck-v${SHELLCHECK_VERSION}/shellcheck"
           test -f "$extract_dir/shellcheck" -a ! -L "$extract_dir/shellcheck"
           install -m 755 "$extract_dir/shellcheck" "$bin_dir/shellcheck"
+          printf '%s  %s\n' "$SHELLCHECK_BINARY_SHA256" "$bin_dir/shellcheck" | \
+            sha256sum --check --strict -
           printf '%s\n' "$bin_dir" >>"$GITHUB_PATH"
 
       - name: Require the pinned ShellCheck gate
+        env:
+          SHELLCHECK_BINARY_SHA256: 4da528ddb3a4d1b7b24a59d4e16eb2f5fd960f4bd9a3708a15baddbdf1d5a55b
         run: |
           set -euo pipefail
           pinned_shellcheck="$RUNNER_TEMP/shellcheck-bin/shellcheck"
           test "$(command -v shellcheck)" = "$pinned_shellcheck"
+          printf '%s  %s\n' "$SHELLCHECK_BINARY_SHA256" "$pinned_shellcheck" | \
+            sha256sum --check --strict -
           "$pinned_shellcheck" --version | grep -F 'version: 0.11.0'
           "$pinned_shellcheck" --norc -x scripts/*.sh
           awk '
@@ -238,4 +245,4 @@ jobs:
           ' references/releasing.md | "$pinned_shellcheck" --norc --shell=bash -
 
       - name: Run offline project check
-        run: /bin/bash -p scripts/check.sh --venv
+        run: /bin/bash -p scripts/check.sh --venv --shellcheck "$RUNNER_TEMP/shellcheck-bin/shellcheck"

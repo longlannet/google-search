@@ -86,7 +86,7 @@ cleanup_bootstrap_release_checkout() {
   trap - EXIT
   trap '' HUP INT TERM
   if [ -n "$BOOTSTRAP_RELEASE_CHECKOUT" ]; then
-    if cd /root && \
+    if cd / && \
       bootstrap_release_checkout_is_safe "$BOOTSTRAP_RELEASE_CHECKOUT" && \
       find -P "$BOOTSTRAP_RELEASE_CHECKOUT" -xdev -depth -delete && \
       [ ! -e "$BOOTSTRAP_RELEASE_CHECKOUT" ] && \
@@ -540,7 +540,7 @@ cleanup_release_state() {
   trap '' HUP INT TERM
   cleanup_status=0
   if [ -n "${RELEASE_CHECKOUT:-}" ]; then
-    cd /root || cleanup_status=1
+    cd / || cleanup_status=1
   fi
   if [ -n "${FRESH_KEYRING:-}" ]; then
     if stop_private_gpg_agent "$FRESH_KEYRING"; then
