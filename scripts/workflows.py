@@ -1,8 +1,8 @@
 from args import MAX_MAPS_ALL_PLACES
 from client import SerperAPIError, do_request
 from io_common import safe_print, sanitize_external_data, sanitize_external_text
-from renderers import print_places, print_reviews
 from renderers_json import save_output, serialize_json
+from renderers_pretty import print_places, print_reviews
 
 
 class WorkflowValidationError(ValueError):

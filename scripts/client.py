@@ -453,9 +453,16 @@ def _build_payload(endpoint, query, num, page, gl, hl, place_id=None, cid=None, 
             raise SerperAPIError(str(error), kind='validation') from None
         return {'url': query} if endpoint == 'webpage' else {'url': query, 'gl': gl, 'hl': hl}
     if endpoint == 'maps':
+        if page > 1:
+            raise SerperAPIError(
+                'maps page > 1 is unsupported until an explicit --ll viewport is available',
+                kind='validation',
+            )
         return {'q': query, 'hl': hl, 'page': page}
     if endpoint == 'autocomplete':
         return {'q': query, 'gl': gl, 'hl': hl}
+    if endpoint == 'scholar':
+        return {'q': query, 'page': page, 'gl': gl, 'hl': hl}
     return {'q': query, 'num': num, 'page': page, 'gl': gl, 'hl': hl}
 
 
@@ -667,7 +674,12 @@ def do_request(endpoint, query, num, page=1, gl='cn', hl='zh-cn', place_id=None,
                     ) from None
                 finally:
                     if response is not None:
-                        _close_response(response, deadline)
+                        primary_error = sys.exc_info()[0] is not None
+                        try:
+                            _close_response(response, deadline)
+                        except Exception:
+                            if not primary_error:
+                                raise
 
             status_summary = ','.join(str(status) for status in retryable_statuses)
             raise SerperAPIError(

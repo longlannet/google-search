@@ -16,7 +16,12 @@ def serialize_json(payload, compact=False):
 
 
 def save_output(text, save_path):
-    return secure_write_text(text, save_path)
+    try:
+        return secure_write_text(text, save_path)
+    except OutputSecurityError:
+        raise
+    except OSError:
+        raise OutputSecurityError('output could not be securely saved') from None
 
 
 def _request_summary(endpoint, query, num, page, gl, hl, place_id=None, cid=None, fid=None):
@@ -32,6 +37,8 @@ def _request_summary(endpoint, query, num, page, gl, hl, place_id=None, cid=None
         return {'q': sanitize_external_text(query), 'hl': hl, 'page': page}
     if endpoint == 'autocomplete':
         return {'q': sanitize_external_text(query), 'gl': gl, 'hl': hl}
+    if endpoint == 'scholar':
+        return {'q': sanitize_external_text(query), 'page': page, 'gl': gl, 'hl': hl}
     return {
         'q': sanitize_external_text(query), 'num': num, 'page': page, 'gl': gl, 'hl': hl,
     }
