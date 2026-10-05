@@ -19,7 +19,7 @@ from args import (
     UsageError,
     validate_public_https_url,
 )
-from io_common import sanitize_external_data
+from io_common import WebpageResponse, sanitize_external_data
 
 
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -453,9 +453,16 @@ def _build_payload(endpoint, query, num, page, gl, hl, place_id=None, cid=None, 
             raise SerperAPIError(str(error), kind='validation') from None
         return {'url': query} if endpoint == 'webpage' else {'url': query, 'gl': gl, 'hl': hl}
     if endpoint == 'maps':
+        if page > 1:
+            raise SerperAPIError(
+                'maps page > 1 is unsupported until an explicit --ll viewport is available',
+                kind='validation',
+            )
         return {'q': query, 'hl': hl, 'page': page}
     if endpoint == 'autocomplete':
         return {'q': query, 'gl': gl, 'hl': hl}
+    if endpoint == 'scholar':
+        return {'q': query, 'page': page, 'gl': gl, 'hl': hl}
     return {'q': query, 'num': num, 'page': page, 'gl': gl, 'hl': hl}
 
 
@@ -507,7 +514,7 @@ def _reject_api_keys_in_payload(payload, api_keys):
         )
 
 
-def _decode_json_response(response, api_keys):
+def _decode_json_response(response, api_keys, endpoint=None):
     raw_length = response.headers.get('Content-Length') if response.headers else None
     if raw_length:
         try:
@@ -566,7 +573,10 @@ def _decode_json_response(response, api_keys):
         redacted = _redact_api_keys(data, api_keys)
     except RecursionError:
         raise SerperAPIError('Serper returned invalid JSON nesting', kind='response') from None
-    return sanitize_external_data(redacted)
+    sanitized = sanitize_external_data(redacted)
+    if endpoint == 'webpage' and isinstance(redacted.get('text'), str):
+        return WebpageResponse(sanitized, redacted['text'])
+    return sanitized
 
 
 def _close_response(response, deadline):
@@ -643,7 +653,7 @@ def do_request(endpoint, query, num, page=1, gl='cn', hl='zh-cn', place_id=None,
                     )
                     status_code = response.status_code
                     if status_code == 200:
-                        return _decode_json_response(response, keys), key_slot
+                        return _decode_json_response(response, keys, endpoint=endpoint), key_slot
                     if status_code in FAILOVER_HTTP_STATUSES:
                         retryable_statuses.append(status_code)
                         continue
@@ -667,7 +677,12 @@ def do_request(endpoint, query, num, page=1, gl='cn', hl='zh-cn', place_id=None,
                     ) from None
                 finally:
                     if response is not None:
-                        _close_response(response, deadline)
+                        primary_error = sys.exc_info()[0] is not None
+                        try:
+                            _close_response(response, deadline)
+                        except Exception:
+                            if not primary_error:
+                                raise
 
             status_summary = ','.join(str(status) for status in retryable_statuses)
             raise SerperAPIError(

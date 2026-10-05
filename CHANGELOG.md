@@ -4,6 +4,36 @@
 
 格式参考 Keep a Changelog，版本号建议遵循 Semantic Versioning（语义化版本）。
 
+## [Unreleased]
+
+### Changed
+
+- 将正式运行路径收敛为 `run.sh -> search.py`，把 URL、Maps、Scholar、清洗、保存和 response-close 契约直接合并进核心模块，不再依赖运行时 monkeypatch
+- `--sanitized-json` 成为原生参数；`--raw` 仅保留为同语义兼容别名，不再宣称输出逐字节原始 API JSON
+- 安装器从 `requirements.txt` 单一读取精确版本，增加持久安装锁、候选超时、信号退出、target-safe 发布和失败回滚；runner 持共享锁避免跨 runtime 发布窗口启动
+- runner 改用 `python -I -S`，将受信 `scripts/` 放在固定 venv `site-packages` 前，并禁用 `.pth` / `sitecustomize` / `usercustomize` 启动钩子；安装候选发布前核对 `requests` 导入来源
+- 离线门禁改为聚焦的标准库契约测试，覆盖参数、端点 payload、URL/DNS、key 脱敏、响应边界、安全保存、workflow 与 installer wrapper 契约
+- CI 收敛为 Python 3.10–3.14 的同一离线门禁，不再安装或跳过一套独立 pytest 平台
+
+### Removed
+
+- 删除退役的 runtime firewall、snapshot token、pytest sentinel、事务发布 helper、selfcheck/smoke compatibility stub 及其历史大型测试
+- 删除不再使用的 `requirements-dev.in` / `requirements-dev.txt` 和 Python 聚合兼容层
+
+### Fixed
+
+- 修复安装提交与旧备份删除之间的终止信号窗口；提交前回滚，提交后清理不能删除唯一新环境，并对遗留备份报告恢复位置
+- runner、installer 验证和离线门禁在执行 venv 前检查实际源码、bytecode、依赖、解释器目标及祖先权限，拒绝其他用户可写代码和非预期链接
+- `install.sh --check` 不再创建安装锁、修改权限或生成 bytecode；Bash 语法门禁改为逐文件执行
+- 网页 pretty 摘要在保持 JSON 清洗契约的同时保留安全段落和原文长度，显式标题不再导致首段正文丢失
+- 明确 native endpoint、workflow、sanitized/raw 及失败 JSON 的独立格式；离线门禁发现全部回归测试，新增真实信号事务与跨 UID 权限用例
+- `webpage` / `lens` 现在从所有入口拒绝任意查询串；Maps 第 2 页以上和 Scholar 显式 `num` 也不能通过直接核心调用绕过 CLI 契约
+- 清洗后对象键名冲突与 `_truncated` 标记冲突不再覆盖外部值
+- 保存阶段的底层 `OSError` 统一分类，response close 失败不再覆盖正在传播的主要请求错误
+- `check.sh --smoke-test` 保留调用方注入的 Serper key；默认离线检查仍主动清除 key
+- `install.sh --smoke-test` 在 runtime 提交后先释放安装锁，避免调用 `run.sh` 时与自身排他锁死锁；回滚提示不再提前宣称恢复已经完成
+- 候选 runtime 验证现在显式绑定候选目录，不再以候选解释器误检现有 `.venv` 的依赖版本和导入来源
+
 ## [v2.0.0] - 2026-08-24
 
 ### Security

@@ -51,7 +51,11 @@ def _argument_output_intent(argv):
             break
         if token == '--json' or token.startswith('--json='):
             json_intent = True
-        elif token == '--raw' or token.startswith('--raw='):
+        elif (
+            token in {'--raw', '--sanitized-json'}
+            or token.startswith('--raw=')
+            or token.startswith('--sanitized-json=')
+        ):
             raw_intent = True
         elif token == '--compact' or token.startswith('--compact='):
             compact_intent = True
@@ -98,7 +102,10 @@ def main(argv=None):
     except UsageError as error:
         machine_mode, compact_intent = _argument_output_intent(argv)
         error_line = str(error).splitlines()[0] if str(error).splitlines() else 'Invalid arguments'
-        _emit_error(machine_mode, 'unknown', error_line, compact=compact_intent)
+        _emit_error(
+            machine_mode, getattr(error, 'endpoint', 'unknown'), error_line,
+            compact=compact_intent,
+        )
         return 1
 
     endpoint = parsed['endpoint']
@@ -163,6 +170,11 @@ def main(argv=None):
                 request_text = f"q={parsed['query']} | page={parsed['page']} hl={parsed['hl']}"
             elif endpoint == 'autocomplete':
                 request_text = f"q={parsed['query']} | gl={parsed['gl']} hl={parsed['hl']}"
+            elif endpoint == 'scholar':
+                request_text = (
+                    f"q={parsed['query']} | page={parsed['page']} | "
+                    f"gl={parsed['gl']} hl={parsed['hl']}"
+                )
             else:
                 request_text = (
                     f"q={parsed['query']} | num={parsed['num']} page={parsed['page']} | "

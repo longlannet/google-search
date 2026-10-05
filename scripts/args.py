@@ -2,8 +2,7 @@ import argparse
 import ipaddress
 import re
 import socket
-import unicodedata
-from urllib.parse import parse_qsl, unquote_plus, urlsplit
+from urllib.parse import urlsplit
 
 
 ENDPOINTS = {
@@ -27,21 +26,8 @@ MAX_LIMIT = 100
 MAX_QUERY_LENGTH = 2_048
 MAX_IDENTIFIER_LENGTH = 512
 MAX_MAPS_ALL_PLACES = 10
-MAX_URL_QUERY_FIELDS = 100
 LOCALE_PATTERN = re.compile(r'^[A-Za-z0-9]{2,8}(?:-[A-Za-z0-9]{1,8})?$')
 BLOCKED_HOST_SUFFIXES = ('.localhost', '.local', '.internal', '.home.arpa')
-SENSITIVE_QUERY_KEYS = {
-    'token', 'idtoken', 'refreshtoken', 'authtoken', 'oauthtoken', 'apikey',
-    'accesskey', 'accesskeyid', 'awsaccesskeyid', 'accesstoken', 'securitytoken',
-    'auth', 'authorization',
-    'bearer', 'credential', 'key', 'password', 'passwd', 'secret', 'signature',
-    'sig', 'session', 'sessionid', 'sessiontoken',
-    # Azure shared-access-signature fields.
-    'se', 'sip', 'sp', 'spr', 'sr', 'st', 'sv', 'skoid', 'sktid', 'skt', 'ske', 'sks', 'skv',
-}
-SENSITIVE_QUERY_SUFFIXES = (
-    'token', 'secret', 'signature', 'sessionid', 'apikey', 'accesskey', 'password', 'credential',
-)
 BIDI_CONTROLS = {
     '\u061c', '\u200e', '\u200f', '\u202a', '\u202b', '\u202c', '\u202d', '\u202e',
     '\u2066', '\u2067', '\u2068', '\u2069',
@@ -49,7 +35,9 @@ BIDI_CONTROLS = {
 
 
 class UsageError(Exception):
-    pass
+    def __init__(self, message, endpoint='unknown'):
+        super().__init__(message)
+        self.endpoint = endpoint
 
 
 class _ArgumentParser(argparse.ArgumentParser):
@@ -76,7 +64,10 @@ def build_parser():
     parser.add_argument('--cid', default=None)
     parser.add_argument('--fid', default=None)
     parser.add_argument('--json', dest='json_mode', action='store_true')
-    parser.add_argument('--raw', dest='raw_mode', action='store_true')
+    parser.add_argument(
+        '--sanitized-json', '--raw', dest='raw_mode', action='store_true',
+        help='Bounded sanitized API response JSON (--raw is a compatibility alias)',
+    )
     parser.add_argument('--compact', action='store_true')
     parser.add_argument('--save', dest='save_path', default=None)
     return parser
@@ -150,58 +141,6 @@ def _validate_global_address(address):
         raise UsageError('URL must resolve only to public unicast IP addresses')
 
 
-def _is_sensitive_query_name(raw_name):
-    lowered_name = unicodedata.normalize('NFKC', raw_name).strip().lower()
-    canonical_name = re.sub(r'[^a-z0-9]', '', lowered_name)
-    return (
-        canonical_name in SENSITIVE_QUERY_KEYS
-        or canonical_name.endswith(SENSITIVE_QUERY_SUFFIXES)
-        or canonical_name.startswith(('xamz', 'xgoog', 'xms'))
-    )
-
-
-def _decoded_query_name_layers(raw_name):
-    """Yield each decoding layer so nested percent-encoding cannot hide credentials."""
-    current = raw_name
-    for _ in range(16):
-        yield current
-        try:
-            decoded = unquote_plus(current, errors='strict')
-        except UnicodeDecodeError:
-            raise UsageError('URL query contains an invalid encoded field name') from None
-        if decoded == current:
-            return
-        current = decoded
-    raise UsageError('URL query field name is excessively encoded')
-
-
-def _validate_query_name(raw_name):
-    maximum_fields = 1
-    for decoded_name in _decoded_query_name_layers(raw_name):
-        # A separator can itself be percent-encoded. Re-split every decoded
-        # layer so ``token%26safe`` cannot collapse to the benign-looking
-        # canonical name ``tokensafe``.
-        normalized_name = unicodedata.normalize('NFKC', decoded_name)
-        decoded_fields = re.split(r'[&;]', normalized_name)
-        maximum_fields = max(maximum_fields, len(decoded_fields))
-        for decoded_field in decoded_fields:
-            candidate_name = decoded_field.partition('=')[0]
-            if _is_sensitive_query_name(candidate_name):
-                raise UsageError('URL query contains a prohibited credential or signature field')
-    return maximum_fields
-
-
-def _validate_nested_query_content(raw_query):
-    maximum_fields = 0
-    for decoded_query in _decoded_query_name_layers(raw_query):
-        normalized_query = unicodedata.normalize('NFKC', decoded_query)
-        maximum_fields = max(maximum_fields, len(re.split(r'[?&;]', normalized_query)))
-        for match in re.finditer(r'(?:^|[?&;=])([^?&;=]+)(?==)', normalized_query):
-            if _is_sensitive_query_name(match.group(1)):
-                raise UsageError('URL query contains a prohibited credential or signature field')
-    return maximum_fields
-
-
 def validate_public_https_url(value, resolve_dns=True):
     _validate_plain_text('URL', value, MAX_QUERY_LENGTH)
     if value != value.strip():
@@ -221,19 +160,8 @@ def validate_public_https_url(value, resolve_dns=True):
         raise UsageError('URL fragments are not allowed for webpage or Lens requests')
     if port not in {None, 443}:
         raise UsageError('URL must use the standard HTTPS port 443')
-    try:
-        parse_qsl(parsed.query, keep_blank_values=True, max_num_fields=MAX_URL_QUERY_FIELDS)
-    except ValueError:
-        raise UsageError('URL query is malformed or has too many fields') from None
-    raw_query_fields = re.split(r'[&;]', parsed.query) if parsed.query else []
-    effective_field_count = sum(
-        _validate_query_name(raw_field.partition('=')[0])
-        for raw_field in raw_query_fields
-    )
-    if parsed.query:
-        effective_field_count = max(effective_field_count, _validate_nested_query_content(parsed.query))
-    if effective_field_count > MAX_URL_QUERY_FIELDS:
-        raise UsageError('URL query is malformed or has too many fields')
+    if '?' in value:
+        raise UsageError('URL query strings are not allowed for webpage or Lens requests')
 
     hostname = parsed.hostname.rstrip('.').lower()
     if '%' in hostname:
@@ -357,7 +285,11 @@ def parse_args(argv):
     elif endpoint in {'webpage', 'lens'}:
         if not query:
             raise UsageError(f'{endpoint} endpoint requires a URL')
-        validate_public_https_url(query, resolve_dns=False)
+        try:
+            validate_public_https_url(query, resolve_dns=False)
+        except UsageError as error:
+            error.endpoint = endpoint
+            raise
     elif not query:
         raise UsageError(get_usage())
 
@@ -368,12 +300,21 @@ def parse_args(argv):
         'reviews': ('num', 'page'),
         'maps': ('num', 'gl'),
         'autocomplete': ('num', 'page'),
+        'scholar': ('num',),
         'webpage': ('num', 'page', 'gl', 'hl'),
         'lens': ('num', 'page'),
     }.get(endpoint, ())
     for field_name in unsupported_explicit_fields:
         if explicit_fields[field_name]:
-            raise UsageError(f'--{field_name} is not supported by the {endpoint} endpoint')
+            raise UsageError(
+                f'--{field_name} is not supported by the {endpoint} endpoint',
+                endpoint=endpoint,
+            )
+    if endpoint in {'maps', 'maps-reviews'} and page > 1:
+        raise UsageError(
+            f'{endpoint} page > 1 is unsupported until an explicit --ll viewport is available',
+            endpoint=endpoint,
+        )
     if endpoint == 'maps-reviews' and ns.all_results and ns.pick is not None:
         raise UsageError('--pick cannot be combined with --all for maps-reviews')
     if endpoint == 'maps-reviews' and ns.all_results and num > MAX_MAPS_ALL_PLACES:
@@ -383,7 +324,7 @@ def parse_args(argv):
     if ns.pick is not None and endpoint != 'maps-reviews':
         raise UsageError('--pick is only valid with maps-reviews')
     if ns.raw_mode and ns.json_mode:
-        raise UsageError('--json cannot be combined with --raw')
+        raise UsageError('--json cannot be combined with --sanitized-json/--raw')
 
     output_mode = 'raw' if ns.raw_mode else 'json' if ns.json_mode else 'pretty'
     if output_mode != 'pretty' and ns.limit is not None:
@@ -391,11 +332,11 @@ def parse_args(argv):
     if endpoint == 'webpage' and ns.limit is not None:
         raise UsageError('--limit is not supported by the webpage endpoint')
     if ns.compact and output_mode == 'pretty':
-        raise UsageError('--compact requires --json or --raw')
+        raise UsageError('--compact requires --json or --sanitized-json/--raw')
     if ns.save_path is not None and not ns.save_path.strip():
         raise UsageError('--save requires a non-empty file path')
     if ns.save_path is not None and output_mode == 'pretty':
-        raise UsageError('--save requires --json or --raw')
+        raise UsageError('--save requires --json or --sanitized-json/--raw')
     return {
         'endpoint': endpoint, 'query': query, 'num': num, 'page': page, 'gl': gl, 'hl': hl,
         'output_mode': output_mode, 'compact': ns.compact, 'save_path': ns.save_path,

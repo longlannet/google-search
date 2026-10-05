@@ -1,3 +1,4 @@
+import re
 import sys
 
 
@@ -53,6 +54,26 @@ def sanitize_external_text(value, max_chars=MAX_EXTERNAL_STRING_CHARS):
     return ''.join(output)
 
 
+class WebpageResponse(dict):
+    """Keep safe paragraph metadata outside the serialized response fields."""
+
+    def __init__(self, sanitized_data, redacted_text):
+        super().__init__(sanitized_data)
+        text = redacted_text.strip()
+        self.text_length = len(text)
+        bounded = text[:MAX_EXTERNAL_STRING_CHARS]
+        normalized = bounded.replace('\r\n', '\n').replace('\r', '\n')
+        self.text_paragraphs = tuple(
+            sanitize_external_text(paragraph.strip())
+            for paragraph in re.split(r'\n[ \t]*\n', normalized)
+            if paragraph.strip()
+        )
+        if len(text) > MAX_EXTERNAL_STRING_CHARS and self.text_paragraphs:
+            self.text_paragraphs = (
+                *self.text_paragraphs[:-1], self.text_paragraphs[-1] + '[truncated]',
+            )
+
+
 def sanitize_external_data(value, depth=0):
     """Recursively bound and sanitize data received from an external service."""
     if depth >= MAX_EXTERNAL_DEPTH:
@@ -65,9 +86,19 @@ def sanitize_external_data(value, depth=0):
         output = {}
         for index, (key, item) in enumerate(value.items()):
             if index >= MAX_EXTERNAL_COLLECTION_ITEMS:
-                output['_truncated'] = True
+                marker = '_truncated'
+                collision = 2
+                while marker in output:
+                    marker = f'_truncated [collision {collision}]'
+                    collision += 1
+                output[marker] = True
                 break
-            safe_key = sanitize_external_text(key, max_chars=256)
+            base_key = sanitize_external_text(key, max_chars=256)
+            safe_key = base_key
+            collision = 2
+            while safe_key in output:
+                safe_key = f'{base_key} [collision {collision}]'
+                collision += 1
             output[safe_key] = sanitize_external_data(item, depth + 1)
         return output
     if isinstance(value, (list, tuple)):
