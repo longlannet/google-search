@@ -12,7 +12,7 @@ Required release controls belong in GitHub or another isolated CI system:
 - signed annotated version tag
 - immutable release assets and recorded checksums
 
-The local `scripts/check.sh` gate performs syntax, focused contract tests, and optional ShellCheck. It does not execute installer code, extract shell from documentation, test GitHub publication, or claim to prove security.
+The local `scripts/check.sh` gate performs per-file syntax checks, offline regression tests, and optional ShellCheck. Installer fixtures execute a temporary copy with local package stubs and injected signals to exercise locks, publication, rollback, and read-only checks. They never install into the live runtime or contact package indexes. This gate does not test real dependency downloads or GitHub publication, and does not claim to prove security.
 
 Before release, verify in isolated CI:
 

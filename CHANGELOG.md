@@ -22,6 +22,11 @@
 
 ### Fixed
 
+- 修复安装提交与旧备份删除之间的终止信号窗口；提交前回滚，提交后清理不能删除唯一新环境，并对遗留备份报告恢复位置
+- runner、installer 验证和离线门禁在执行 venv 前检查实际源码、bytecode、依赖、解释器目标及祖先权限，拒绝其他用户可写代码和非预期链接
+- `install.sh --check` 不再创建安装锁、修改权限或生成 bytecode；Bash 语法门禁改为逐文件执行
+- 网页 pretty 摘要在保持 JSON 清洗契约的同时保留安全段落和原文长度，显式标题不再导致首段正文丢失
+- 明确 native endpoint、workflow、sanitized/raw 及失败 JSON 的独立格式；离线门禁发现全部回归测试，新增真实信号事务与跨 UID 权限用例
 - `webpage` / `lens` 现在从所有入口拒绝任意查询串；Maps 第 2 页以上和 Scholar 显式 `num` 也不能通过直接核心调用绕过 CLI 契约
 - 清洗后对象键名冲突与 `_truncated` 标记冲突不再覆盖外部值
 - 保存阶段的底层 `OSError` 统一分类，response close 失败不再覆盖正在传播的主要请求错误

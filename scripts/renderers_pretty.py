@@ -1,4 +1,4 @@
-from io_common import safe_print, sanitize_external_data
+from io_common import WebpageResponse, safe_print, sanitize_external_data
 
 
 def _as_item(value, fallback_key='title'):
@@ -294,24 +294,29 @@ def print_autocomplete(items, limit=10):
     safe_print('-' * 30)
 
 
-def print_webpage(data, summary_chars=800):
+def print_webpage(data, summary_chars=800, text_paragraphs=None, text_length=None):
     if not isinstance(data, dict):
         data = {}
     text = str(data.get('text') or '').strip()
     title = str(data.get('title') or '').strip()
-    if not text:
+    if not text or text_length == 0:
         safe_print('❌ 未提取到网页正文。')
         return
 
-    paragraphs = [p.strip() for p in text.split('\n\n') if p.strip()]
+    paragraphs = text_paragraphs
+    if paragraphs is None:
+        paragraphs = WebpageResponse({}, text).text_paragraphs
+    body_paragraphs = paragraphs
     if not title:
         title = paragraphs[0] if paragraphs else '网页正文'
-    body = '\n\n'.join(paragraphs[1:]) if len(paragraphs) > 1 else text
+        if len(paragraphs) > 1:
+            body_paragraphs = paragraphs[1:]
+    body = '\n\n'.join(body_paragraphs)
     summary = body[:summary_chars].strip() if body else text[:summary_chars].strip()
 
     safe_print('📄 网页摘要:')
     safe_print(f'   标题: {title[:160]}')
-    safe_print(f'   长度: {len(text)} 字符')
+    safe_print(f'   长度: {text_length if text_length is not None else len(text)} 字符')
     safe_print('-' * 30)
     safe_print(summary)
     if len(body) > summary_chars:
@@ -390,6 +395,12 @@ def print_search_parameters(data):
 
 
 def render_results(endpoint, data, limit=10):
+    webpage_metadata = {}
+    if endpoint == 'webpage' and isinstance(data, WebpageResponse):
+        webpage_metadata = {
+            'text_paragraphs': data.text_paragraphs,
+            'text_length': data.text_length,
+        }
     data = sanitize_external_data(data)
     if not isinstance(data, dict):
         data = {}
@@ -444,7 +455,7 @@ def render_results(endpoint, data, limit=10):
     elif endpoint == 'patents':
         print_organic_results(data.get('organic', []), title=endpoint_titles[endpoint], limit=limit)
     elif endpoint == 'webpage':
-        print_webpage(data)
+        print_webpage(data, **webpage_metadata)
     elif endpoint == 'lens':
         print_lens_results(data, limit=limit)
     else:

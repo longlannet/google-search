@@ -33,12 +33,52 @@ jobs:
           cache: pip
           cache-dependency-path: requirements.txt
 
+      - name: Protect the selected toolcache Python
+        run: |
+          set -euo pipefail
+          [[ "$(python -I -S -c 'import sys; print(sys.base_prefix)')" == "$pythonLocation" ]]
+          # Hosted toolcache permissions are permissive; constrain only this Python and its parent chain.
+          sudo /usr/bin/python3 -I -S -B - "$RUNNER_TOOL_CACHE" "$pythonLocation" "$(id -u)" <<'PY'
+          import os
+          from pathlib import Path
+          import re
+          import stat
+          import sys
+
+          root, selected = map(Path, sys.argv[1:3])
+          runner_uid = int(sys.argv[3])
+          if root != Path('/opt/hostedtoolcache') or not re.fullmatch(
+              r'/opt/hostedtoolcache/Python/[0-9]+\.[0-9]+\.[0-9]+/x64', str(selected)
+          ) or selected.resolve(strict=True) != selected:
+              raise SystemExit('Unexpected setup-python installation path')
+          paths = []
+          for path in (selected, *selected.parents):
+              if path == root.parent:
+                  break
+              paths.append(path)
+          for directory, directories, files in os.walk(selected, followlinks=False):
+              paths.extend(Path(directory) / name for name in (*directories, *files))
+          changes = []
+          for path in paths:
+              metadata = path.lstat()
+              if metadata.st_uid not in {0, runner_uid} or not (
+                  stat.S_ISREG(metadata.st_mode) or stat.S_ISDIR(metadata.st_mode)
+                  or stat.S_ISLNK(metadata.st_mode)
+              ):
+                  raise SystemExit('Unexpected setup-python installation ownership or file type')
+              if not stat.S_ISLNK(metadata.st_mode) and metadata.st_mode & 0o022:
+                  changes.append((path, stat.S_IMODE(metadata.st_mode) & ~0o022))
+          for path, mode in changes:
+              path.chmod(mode, follow_symlinks=False)
+          PY
+
       - name: Install locked runtime
         env:
           PIP_CONFIG_FILE: /dev/null
         run: |
           set -euo pipefail
           umask 077
+          (set -o noclobber; : > .venv.install.lock)
           python -m venv .venv
           .venv/bin/python -m pip --isolated install \
             --disable-pip-version-check --no-input \
@@ -46,7 +86,7 @@ jobs:
             -r requirements.txt
           .venv/bin/python -m pip check
 
-      - name: Run offline gates
+      - name: Run offline contract and lifecycle regression gates
         run: |
           set -euo pipefail
           shellcheck_path="$(command -v shellcheck)"

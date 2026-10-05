@@ -32,14 +32,36 @@ case "${1:-}" in
 esac
 [[ "$#" -eq 0 ]] || { printf '%s\n' 'unexpected arguments' >&2; exit 2; }
 
+guard_runtime() {
+  /usr/bin/python3 -I -S -B -c '
+import os
+from pathlib import Path
+import stat
+import sys
+
+path = Path(sys.argv[1])
+for item in (path, *path.parents):
+    metadata = item.lstat()
+    kind_ok = stat.S_ISREG(metadata.st_mode) if item == path else stat.S_ISDIR(metadata.st_mode)
+    sticky_root = item in {Path("/tmp"), Path("/var/tmp")} and metadata.st_uid == 0 and stat.S_IMODE(metadata.st_mode) == 0o1777
+    if not kind_ok or metadata.st_uid not in {0, os.geteuid()} or (metadata.st_mode & 0o022 and not sticky_root):
+        sys.exit("google-search: runtime guard or its parent directory is unsafe")
+sys.argv = sys.argv[1:]
+exec(compile(path.read_bytes(), str(path), "exec"), {"__name__": "__main__", "__file__": str(path)})
+' "$SCRIPT_DIR/runtime_guard.py" --skill "$SKILL_DIR" "$@" || return 3
+}
+
 check_python_runtime() {
   local python="$1" runtime="$2"
   [[ -x "$python" ]] || return 1
-  "$python" -I -S -c '
+  guard_runtime --runtime "$runtime" || return 1
+  "$python" -I -S -B -c '
 from pathlib import Path
 import re
 import sys
 
+if not (3, 10) <= sys.version_info[:2] <= (3, 14):
+    raise SystemExit(1)
 venv = Path(sys.argv[2])
 site_packages = venv / "lib" / f"python{sys.version_info.major}.{sys.version_info.minor}" / "site-packages"
 if not site_packages.is_dir() or site_packages.is_symlink():
@@ -88,6 +110,8 @@ for directory in "$SKILL_DIR" "$SCRIPT_DIR"; do
   }
 done
 
+guard_runtime || exit 3
+
 [[ -f "$LOCK" && ! -L "$LOCK" ]] || { printf '%s\n' 'google-search: requirements.txt is missing or unsafe' >&2; exit 3; }
 IFS=: read -r lock_owner lock_mode lock_links < <(/usr/bin/stat -c '%u:%a:%h' -- "$LOCK")
 if [[ "$lock_owner" != 0 && "$lock_owner" != "$CURRENT_UID" ]] \
@@ -97,26 +121,32 @@ if [[ "$lock_owner" != 0 && "$lock_owner" != "$CURRENT_UID" ]] \
     printf '%s\n' 'google-search: requirements.txt metadata is unsafe' >&2
     exit 3
 fi
-if [[ ! -e "$INSTALL_LOCK" ]]; then
+if [[ "$MODE" != check && ! -e "$INSTALL_LOCK" ]]; then
   (set -o noclobber; : >"$INSTALL_LOCK") 2>/dev/null || true
 fi
 [[ -f "$INSTALL_LOCK" && ! -L "$INSTALL_LOCK" ]] || {
   printf '%s\n' 'google-search: install lock is unsafe' >&2
   exit 3
 }
-/bin/chmod 0600 -- "$INSTALL_LOCK"
 IFS=: read -r install_lock_owner install_lock_mode install_lock_links \
   < <(/usr/bin/stat -c '%u:%a:%h' -- "$INSTALL_LOCK")
 if [[ "$install_lock_owner" != 0 && "$install_lock_owner" != "$CURRENT_UID" ]] \
-  || [[ "$install_lock_mode" != 600 ]] \
+  || [[ "$install_lock_mode" == *[!0-7]* ]] \
+  || (( (8#$install_lock_mode & 0022) != 0 )) \
   || [[ "$install_lock_links" != 1 ]]; then
     printf '%s\n' 'google-search: install lock metadata is unsafe' >&2
     exit 3
 fi
-exec 9<>"$INSTALL_LOCK"
 if [[ "$MODE" == check ]]; then
+  [[ "$install_lock_mode" == 600 ]] || {
+    printf '%s\n' 'google-search: install lock metadata is unsafe' >&2
+    exit 3
+  }
+  exec 9<"$INSTALL_LOCK"
   /usr/bin/flock -s -n 9 || { printf '%s\n' 'google-search: runtime installation is busy' >&2; exit 3; }
 else
+  /bin/chmod 0600 -- "$INSTALL_LOCK"
+  exec 9<>"$INSTALL_LOCK"
   /usr/bin/flock -x -n 9 || { printf '%s\n' 'google-search: another runtime installation is active' >&2; exit 3; }
 fi
 
@@ -160,6 +190,8 @@ cleanup() {
         printf 'google-search: previous runtime requires manual recovery from %s\n' "$BACKUP" >&2
       }
     fi
+  elif [[ -n "$BACKUP" && -e "$BACKUP" ]]; then
+    printf 'google-search: runtime committed; previous backup remains at %s\n' "$BACKUP" >&2
   fi
   if [[ -n "${CANDIDATE:-}" && -d "$CANDIDATE" ]]; then
     /usr/bin/rm -rf -- "$CANDIDATE"
@@ -201,19 +233,21 @@ if [[ -e "$VENV" ]]; then
   /usr/bin/rmdir -- "$BACKUP"
   /usr/bin/mv -T -- "$VENV" "$BACKUP"
 fi
+# Arm rollback before the rename: a signal can run before its next statement.
+PUBLISHED=1
 if ! /usr/bin/mv -T -- "$CANDIDATE" "$VENV"; then
   printf '%s\n' 'google-search: runtime publication failed' >&2
   exit 3
 fi
 CANDIDATE=""
-PUBLISHED=1
 if ! check_runtime; then
   printf '%s\n' 'google-search: new runtime failed validation; rolling back' >&2
   exit 3
 fi
+# Once backup removal starts, the validated runtime must survive cleanup.
+COMMITTED=1
 [[ -z "$BACKUP" ]] || /usr/bin/rm -rf -- "$BACKUP"
 BACKUP=""
-COMMITTED=1
 /usr/bin/flock -u 9
 exec 9>&-
 printf '%s\n' 'google-search: runtime installed'

@@ -19,6 +19,8 @@ done < <(compgen -e)
 SCRIPT_DIR="$(cd -P -- "$(/usr/bin/dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 SKILL_DIR="$(cd -P -- "$SCRIPT_DIR/.." && pwd -P)"
 PYTHON="$SKILL_DIR/.venv/bin/python"
+INSTALL_LOCK="$SKILL_DIR/.venv.install.lock"
+CURRENT_UID="$(/usr/bin/id -u)"
 SHELLCHECK=""
 SMOKE=0
 REQUIRE_VENV=0
@@ -38,27 +40,72 @@ if [[ "$SMOKE" -eq 0 ]]; then
   unset SERPER_API_KEY SERPER_API_KEYS
 fi
 
-if [[ ! -x "$PYTHON" ]]; then
-  [[ "$REQUIRE_VENV" -eq 0 ]] || {
+printf '%s\n' '[google-search] checking shell syntax'
+for script in "$SCRIPT_DIR/run.sh" "$SCRIPT_DIR/install.sh" "$SCRIPT_DIR/check.sh"; do
+  /bin/bash -n "$script"
+done
+
+guard_runtime() {
+  /usr/bin/python3 -I -S -B -c '
+import os
+from pathlib import Path
+import stat
+import sys
+
+path = Path(sys.argv[1])
+for item in (path, *path.parents):
+    metadata = item.lstat()
+    kind_ok = stat.S_ISREG(metadata.st_mode) if item == path else stat.S_ISDIR(metadata.st_mode)
+    sticky_root = item in {Path("/tmp"), Path("/var/tmp")} and metadata.st_uid == 0 and stat.S_IMODE(metadata.st_mode) == 0o1777
+    if not kind_ok or metadata.st_uid not in {0, os.geteuid()} or (metadata.st_mode & 0o022 and not sticky_root):
+        sys.exit("google-search: runtime guard or its parent directory is unsafe")
+sys.argv = sys.argv[1:]
+exec(compile(path.read_bytes(), str(path), "exec"), {"__name__": "__main__", "__file__": str(path)})
+' "$SCRIPT_DIR/runtime_guard.py" --skill "$SKILL_DIR" "$@" || return 3
+}
+
+if [[ -e "$INSTALL_LOCK" || -L "$INSTALL_LOCK" || -e "$SKILL_DIR/.venv" || -L "$SKILL_DIR/.venv" || "$REQUIRE_VENV" -eq 1 ]]; then
+  [[ -f "$INSTALL_LOCK" && ! -L "$INSTALL_LOCK" ]] || {
+    printf '%s\n' 'google-search: install lock missing or unsafe; run scripts/install.sh first' >&2
+    exit 3
+  }
+  IFS=: read -r lock_owner lock_mode lock_links < <(/usr/bin/stat -c '%u:%a:%h' -- "$INSTALL_LOCK")
+  if [[ "$lock_owner" != 0 && "$lock_owner" != "$CURRENT_UID" ]] \
+    || [[ "$lock_mode" != 600 || "$lock_links" != 1 ]]; then
+    printf '%s\n' 'google-search: install lock metadata is unsafe' >&2
+    exit 3
+  fi
+  exec 9<"$INSTALL_LOCK"
+  /usr/bin/flock -s -n 9 || {
+    printf '%s\n' 'google-search: runtime installation is busy' >&2
+    exit 3
+  }
+  [[ -x "$PYTHON" ]] || {
     printf '%s\n' 'google-search: required .venv runtime not found' >&2
     exit 3
   }
+else
   PYTHON=/usr/bin/python3
 fi
+if [[ "$PYTHON" == "$SKILL_DIR/.venv/bin/python" ]]; then
+  guard_runtime --runtime "$SKILL_DIR/.venv" || exit 3
+else
+  guard_runtime || exit 3
+fi
 [[ -x "$PYTHON" ]] || { printf '%s\n' 'google-search: Python runtime not found' >&2; exit 3; }
-PYTHON_VERSION="$("$PYTHON" -I -S -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')"
+PYTHON_VERSION="$("$PYTHON" -I -S -B -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')"
 if [[ "$PYTHON" == "$SKILL_DIR/.venv/bin/python" ]]; then
   SITE_PACKAGES="$SKILL_DIR/.venv/lib/python$PYTHON_VERSION/site-packages"
 else
-  SITE_PACKAGES="$("$PYTHON" -I -S -c 'import sysconfig; print(sysconfig.get_paths()["purelib"])')"
+  SITE_PACKAGES="$("$PYTHON" -I -S -B -c 'import sysconfig; print(sysconfig.get_paths()["purelib"])')"
 fi
 [[ -d "$SITE_PACKAGES" && ! -L "$SITE_PACKAGES" ]] || {
   printf '%s\n' 'google-search: Python site-packages not found' >&2
   exit 3
 }
-
-printf '%s\n' '[google-search] checking shell syntax'
-/bin/bash -n "$SCRIPT_DIR/run.sh" "$SCRIPT_DIR/install.sh" "$SCRIPT_DIR/check.sh"
+if [[ "$PYTHON" != "$SKILL_DIR/.venv/bin/python" ]]; then
+  guard_runtime --site-packages "$SITE_PACKAGES" || exit 3
+fi
 
 if [[ -z "$SHELLCHECK" ]] && command -v shellcheck >/dev/null 2>&1; then
   SHELLCHECK="$(command -v shellcheck)"
@@ -69,26 +116,26 @@ if [[ -n "$SHELLCHECK" ]]; then
   "$SHELLCHECK" --norc -x "$SCRIPT_DIR/run.sh" "$SCRIPT_DIR/install.sh" "$SCRIPT_DIR/check.sh"
 fi
 
-printf '%s\n' '[google-search] compiling active Python modules'
+printf '%s\n' '[google-search] compiling Python modules'
 "$PYTHON" -I -S -B -c '
 import sys
 for path in sys.argv[1:]:
     with open(path, "rb") as source:
         compile(source.read(), path, "exec")
-' \
-  "$SCRIPT_DIR/args.py" "$SCRIPT_DIR/client.py" "$SCRIPT_DIR/helptext.py" \
-  "$SCRIPT_DIR/search.py" "$SCRIPT_DIR/io_common.py" "$SCRIPT_DIR/secure_io.py" \
-  "$SCRIPT_DIR/renderers_json.py" "$SCRIPT_DIR/renderers_pretty.py" "$SCRIPT_DIR/workflows.py"
+' "$SCRIPT_DIR"/*.py
 
-printf '%s\n' '[google-search] running focused offline contract tests'
+printf '%s\n' '[google-search] running offline regression tests'
 "$PYTHON" -I -S -B -c '
-import runpy
 import sys
-path, site_packages = sys.argv[1:3]
-sys.path[:0] = [path.rsplit("/", 1)[0], site_packages]
-sys.argv = [path]
-runpy.run_path(path, run_name="__main__")
-' "$SCRIPT_DIR/test_core_contract.py" "$SITE_PACKAGES"
+import unittest
+scripts, site_packages = sys.argv[1:3]
+sys.path[:0] = [scripts, site_packages]
+suite = unittest.defaultTestLoader.discover(scripts, pattern="test_*.py")
+if suite.countTestCases() == 0:
+    raise SystemExit("google-search: no offline regression tests found")
+result = unittest.TextTestRunner(verbosity=2).run(suite)
+raise SystemExit(not result.wasSuccessful())
+' "$SCRIPT_DIR" "$SITE_PACKAGES"
 
 if [[ "$SMOKE" -eq 1 ]]; then
   printf '%s\n' '[google-search] running explicit online smoke test'

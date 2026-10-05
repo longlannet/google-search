@@ -9,6 +9,7 @@
 - Linux
 - Bash
 - Python 3.10–3.14
+- 可信的 `/usr/bin/python3`，用于在执行 skill venv 前检查源码和运行环境
 - `flock`、GNU `stat`、`id`、`dirname`
 - Serper API key
 
@@ -24,13 +25,13 @@
 
 默认安装会联网访问 PyPI，在私有候选目录中创建 `.venv`，使用 `--require-hashes --only-binary=:all:` 安装锁定依赖，验证后再发布。安装器使用持久排他锁，两个安装进程不会同时修改 `.venv`；运行进程持共享锁，不会跨越 runtime 发布窗口。
 
-只检查现有 runtime，不安装依赖：
+只检查现有 runtime 和 `0600` 安装锁，不创建文件、修改权限或生成 bytecode；缺失或不安全时失败：
 
 ```bash
 /bin/bash -p scripts/install.sh --check
 ```
 
-安装和发布不承诺抵御同 UID 主动篡改，也不宣称断电/内核崩溃级事务原子性。
+安装提交前收到已处理的终止信号会回滚；新环境验证并提交后，旧备份清理失败或中断也不会删除新环境，遗留备份会报告路径。安装和发布不承诺抵御同 UID 主动篡改，也不宣称断电/内核崩溃级事务原子性。
 
 ## API Key
 
@@ -71,13 +72,15 @@ export SERPER_API_KEY='your-key'
 ## 输出
 
 - 默认：有界的人类可读输出。
-- `--json`：包含 `ok`、`trust`、`endpoint`、`keySlot`、`request`、`response` 的包装 JSON。
-- `--sanitized-json`：只输出有界、清洗后的 API response。
+- 原生端点的 `--json` 成功响应：包含 `ok`、`trust`、`endpoint`、`keySlot`、`request`、`response` 的包装 JSON。
+- 原生端点的 `--sanitized-json`：只输出有界、清洗后的 API response，不额外生成 `ok`。
 - `--raw`：`--sanitized-json` 的兼容别名，不是逐字节原始响应。
 - `--compact`：单行 JSON。
 - `--save PATH`：只用于 JSON 模式；输出以 `0600` 原子保存到允许根目录。
 
-结构化结果仍然属于 `untrusted_external_content`。调用方必须同时检查进程退出码和 JSON 的 `ok`/workflow 状态。
+`maps-reviews` 保留独立 workflow 格式。`--json` 返回 `ok/trust/query/maps/usedKeySlots`，单地点结果包含 `pick/selectedPlace/reviews`，`--all` 包含 `results/allSucceeded/failedCount/attemptedCount/skippedCount`，不采用原生端点 wrapper。sanitized/raw 模式也返回聚合对象的精简版，不是单次 API 响应。
+
+参数、配置或前置请求失败时，`--json` 返回 `{ok:false,trust,endpoint,error}`，sanitized/raw 返回 `{ok:false,error}`；已开始的 workflow 也可能以部分结果与计数报告失败。调用方先检查进程退出码，再检查该格式适用的失败字段，不能要求失败对象包含成功字段。完整契约见 `SKILL.md` 和 `references/endpoints.md`。所有外部响应仍是不可信数据。
 
 ## 检查
 
@@ -87,7 +90,7 @@ export SERPER_API_KEY='your-key'
 /bin/bash -p scripts/check.sh
 ```
 
-它执行 Bash 语法、ShellCheck（可用时）、Python 编译和聚焦的标准库契约测试。
+它逐个执行 Bash 语法检查、ShellCheck（可用时）、无 bytecode 写入的 Python 编译，并发现全部离线回归测试。安装测试在临时目录使用真实 venv 与本地依赖 stub，验证锁、信号、发布和回滚，不调用真实 pip 下载或修改正在使用的 runtime。跨 UID 回归仅在 root 且具备 `setpriv` 时运行，其他权限用例也可由普通用户运行。
 
 显式联网 smoke 会消耗一次 Serper 请求：
 
@@ -107,14 +110,20 @@ export SERPER_API_KEY='your-key'
 git diff --check
 ```
 
-CI 在 Python 3.10–3.14 上从 `requirements.txt` 创建隔离 `.venv`，执行同一离线门禁。真实 API smoke 应放在显式、受保护的独立任务中，不得在 pull request 上自动运行。
+CI 在 Python 3.10–3.14 上从 `requirements.txt` 创建隔离 `.venv`，执行同一离线门禁。一次性 runner 先仅对所选 toolcache Python 安装树及其必要父目录去除组/全局写权限，并创建 `0600` 安装锁；检查期间持有共享锁。真实 API smoke 应放在显式、受保护的独立任务中，不得在 pull request 上自动运行。
 
 ## 安全边界
 
-Shell wrapper 使用 `/bin/bash -p`，清理 shell/Python/loader 注入变量，验证 skill、scripts 和 runtime 目录的属主与写权限，并固定使用 skill 自己的 `.venv`。Runner 以 `python -I -S` 启动，先加入受信 `scripts/`，再加入固定 venv `site-packages`，不会执行 `.pth`、`sitecustomize` 或 `usercustomize` 启动钩子。安装器发布候选 runtime 前会核对锁定版本和 `requests` 导入来源。这些措施减少误配置和共享目录风险，不是针对 root 或同 UID 主动攻击者的沙箱。
+Shell wrapper 使用 `/bin/bash -p` 并清理注入变量；由可信系统 Python 在执行 venv 前核验源码、缓存 bytecode、依赖文件、解释器目标与父目录的属主和写权限，拒绝其他 UID 拥有、组/全局可写、特殊文件和非预期符号链接。运行环境采用安装器生成的标准 Linux symlink venv，解释器目标须与 `pyvenv.cfg` 的 home 一致，禁止 `._pth` 重定向。主机 Python 及标准库属于受信基础。
+
+Runner 以 `python -I -S` 启动并禁写 bytecode，先加入受信 `scripts/`，再加入固定 venv `site-packages`，不会执行 `.pth`、`sitecustomize` 或 `usercustomize` 启动钩子。安装器发布候选 runtime 前会核对锁定版本和 `requests` 导入来源。这不是针对 root 或同 UID 主动攻击者的沙箱。
 
 输出保存、API key 文件和 round-robin 状态有各自的文件类型、属主、权限、链接及路径检查。发布边界见 [`references/releasing.md`](references/releasing.md)。
 
 ## License
 
 [MIT](LICENSE)
+
+## 搜索偏好与研究经验
+
+搜索优先级、研究口径及保留的专题参考见 [SKILL.md 的 Notes](SKILL.md#notes-search-preference-and-research-practice)。旧的 Python 直调、smoke/selfcheck 脚本和旧 installer 参数已被安全入口与新离线测试替换；不复用未经检查的旧 `.venv`。

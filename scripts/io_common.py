@@ -1,3 +1,4 @@
+import re
 import sys
 
 
@@ -51,6 +52,26 @@ def sanitize_external_text(value, max_chars=MAX_EXTERNAL_STRING_CHARS):
     if truncated:
         output.append('[truncated]')
     return ''.join(output)
+
+
+class WebpageResponse(dict):
+    """Keep safe paragraph metadata outside the serialized response fields."""
+
+    def __init__(self, sanitized_data, redacted_text):
+        super().__init__(sanitized_data)
+        text = redacted_text.strip()
+        self.text_length = len(text)
+        bounded = text[:MAX_EXTERNAL_STRING_CHARS]
+        normalized = bounded.replace('\r\n', '\n').replace('\r', '\n')
+        self.text_paragraphs = tuple(
+            sanitize_external_text(paragraph.strip())
+            for paragraph in re.split(r'\n[ \t]*\n', normalized)
+            if paragraph.strip()
+        )
+        if len(text) > MAX_EXTERNAL_STRING_CHARS and self.text_paragraphs:
+            self.text_paragraphs = (
+                *self.text_paragraphs[:-1], self.text_paragraphs[-1] + '[truncated]',
+            )
 
 
 def sanitize_external_data(value, depth=0):

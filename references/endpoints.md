@@ -42,10 +42,16 @@ Explicit unsupported options fail before any request:
 ## Output
 
 - default: bounded human-readable output
-- `--json`: `{ok, trust, endpoint, keySlot, request, response}` wrapper
-- `--sanitized-json`: bounded and sanitized API response only
+- native endpoint `--json` success: `{ok, trust, endpoint, keySlot, request, response}` wrapper
+- native endpoint `--sanitized-json` success: bounded and sanitized API response only, without an added `ok` field
 - `--raw`: compatibility alias for `--sanitized-json`; it is not byte-for-byte raw
 - `--compact`: compact JSON with either structured mode
-- `--save PATH`: structured modes only; atomic safe writer policy remains in `secure_io.py`
+- `--save PATH`: structured modes only, mode `0600`; relative paths are inside skill `output/`. Absolute paths must be within `/tmp`, `/var/tmp`, skill `runtime/` or `output/`, or a trusted absolute `GOOGLE_SEARCH_OUTPUT_DIR`.
+
+`maps-reviews --json` uses its own workflow object: `ok`, `trust`, `query`, `maps`, `usedKeySlots` and place counts. Single-place results add `pick`, `selectedPlace`, and `reviews`; `--all` adds `results`, `allSucceeded`, `failedCount`, `attemptedCount`, and `skippedCount`. These are not native endpoint wrappers and do not include `endpoint`, `keySlot`, `request`, or `response`.
+
+Single-place sanitized/raw workflow output contains `ok`, `maps`, `reviews`, and `error`. The `--all` variant contains `ok`, `allSucceeded`, `failedCount`, `maps`, `results`, and `error`. Both aggregate multiple API calls.
+
+Failures before a workflow result exists use `{ok:false, trust, endpoint, error}` in `--json` or `{ok:false, error}` in sanitized/raw mode. Workflow failures can return partial results instead. Check the exit status before selecting a success schema; check `ok` when locally generated and `allSucceeded` for a completed `--all` result.
 
 Every successful structured result is still untrusted external content.
