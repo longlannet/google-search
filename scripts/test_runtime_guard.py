@@ -24,7 +24,7 @@ class RuntimeGuardTests(unittest.TestCase):
         self.entry.write_text('print("TRUSTED_ENTRY")\n', encoding='ascii')
         self.runtime = self.root / '.venv'
         subprocess.run(
-            [sys._base_executable, '-I', '-B', '-m', 'venv', '--without-pip', str(self.runtime)],
+            [str(Path(sys._base_executable).resolve(strict=True)), '-I', '-B', '-m', 'venv', '--without-pip', str(self.runtime)],
             env=ENVIRONMENT, check=True, capture_output=True, timeout=30,
         )
         self.site = next((self.runtime / 'lib').glob('python*/site-packages'))
@@ -47,6 +47,25 @@ class RuntimeGuardTests(unittest.TestCase):
         self.entry.write_text('from helper import value\nprint(value)\n', encoding='ascii')
         self.assertIn('TRUSTED_ENTRY', self.run_wrapper(0).stdout)
         self.assertFalse((self.scripts / '__pycache__').exists())
+
+    def test_standard_pi_interpreter_alias_resolves_to_base(self):
+        alias = self.runtime / 'bin' / '\U0001d70bthon'
+        if not alias.is_symlink():
+            alias.symlink_to('python')
+        self.assertIn('TRUSTED_ENTRY', self.run_wrapper(0).stdout)
+
+    def test_rejects_pi_alias_pointing_to_other_executable(self):
+        alias = self.runtime / 'bin' / '\U0001d70bthon'
+        alias.unlink(missing_ok=True)
+        attacker = self.root / 'other-interpreter'
+        attacker.write_text('#!/bin/sh\nprintf ATTACKER_ENTRY\n', encoding='ascii')
+        attacker.chmod(0o755)
+        alias.symlink_to(attacker)
+        self.run_wrapper()
+
+    def test_rejects_unrecognized_bin_alias_even_to_base(self):
+        (self.runtime / 'bin' / 'other-python').symlink_to('python')
+        self.run_wrapper()
 
     def test_rejects_writable_entry_import_and_cached_bytecode(self):
         for name in ('search.py', 'helper.py', '__pycache__/helper.pyc'):

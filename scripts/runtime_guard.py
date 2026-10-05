@@ -105,7 +105,11 @@ def validate_runtime(runtime):
             metadata = _metadata(path, allow_link=True)
             if not stat.S_ISLNK(metadata.st_mode):
                 continue
-            if path.parent == runtime / 'bin' and name.startswith('python'):
+            # Python 3.14 also creates this standard interpreter alias. It must
+            # resolve to the same validated base executable as every python* link.
+            if path.parent == runtime / 'bin' and (
+                name.startswith('python') or name == '\U0001d70bthon'
+            ):
                 if trusted_path(path, allow_links=True) != target:
                     raise RuntimeSecurityError('virtualenv interpreter links disagree')
             elif path == runtime / 'lib64' and path.resolve(strict=True) == runtime / 'lib':
